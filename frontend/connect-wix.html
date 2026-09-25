@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Connect Wix Website</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <nav>
+    <a href="dashboard.html">Dashboard</a>
+    <a class="active" href="connect-wix.html">Connect Wix</a>
+    <a href="wix-posts.html">Wix Blog Manager</a>
+    <a href="create-blog.html">Create Post</a>
+    <a href="import-sheets.html">Import Sheets</a>
+    <a href="history.html">History & Queue</a>
+    <button class="logout" type="button" onclick="logout()">Log out</button>
+  </nav>
+
+  <p class="eyebrow">Zero-Credential Integration</p>
+  <h1>Connect Your Wix Website</h1>
+  <p class="lede">Connect your Wix account securely without ever sharing your Wix email or password. Access can be revoked from your Wix account at any time with one click.</p>
+
+  <!-- Connection Form Card -->
+  <div class="card">
+    <div class="card-header">
+      <h2 style="margin:0;">Method 1: Site-Scoped Wix API Key (Direct & Self-Serve)</h2>
+      <span class="badge badge-success">Recommended</span>
+    </div>
+    
+    <div class="steps-container">
+      <div class="step-row">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <strong>Open API Keys Manager in your Wix Account:</strong><br />
+          Log into Wix and navigate to <em>Account Settings → API Keys Manager</em> (or your site's developer settings).
+        </div>
+      </div>
+      <div class="step-row">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <strong>Generate New Key with Required Scopes:</strong><br />
+          Select <strong>Manage Blog</strong> (to create/edit/publish posts), <strong>Read Site Properties</strong>, and <strong>Read Members</strong>.
+        </div>
+      </div>
+      <div class="step-row">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <strong>Scope to One Site:</strong><br />
+          Under <em>Site Access</em>, select only the specific website you want us to manage. Copy the key immediately (Wix shows it only once).
+        </div>
+      </div>
+      <div class="step-row">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <strong>Get Site ID:</strong><br />
+          Found in your Wix Dashboard browser URL: <code>wix.com/dashboard/<strong>{SITE_ID}</strong>/...</code>
+        </div>
+      </div>
+    </div>
+
+    <label for="apiKey">Wix API Key</label>
+    <input id="apiKey" type="password" placeholder="wix_api_..." autocomplete="off" />
+
+    <label for="siteId">Wix Site ID</label>
+    <input id="siteId" placeholder="e.g. 5a1b2c3d-4e5f-6789-0123-abcdef456789" />
+
+    <button id="connect-btn" onclick="connectApiKey()">Verify & Connect Website</button>
+
+    <div id="result" style="margin-top:16px;"></div>
+  </div>
+
+  <!-- OAuth 2.0 Card -->
+  <div class="card">
+    <div class="card-header">
+      <h2 style="margin:0;">Method 2: Wix App OAuth 2.0 (1-Click App Install)</h2>
+      <span class="badge badge-neutral">App Flow</span>
+    </div>
+    <p class="hint">
+      If you are connecting via a registered Wix App, you can install the app directly onto your site with a single authorization click.
+    </p>
+    <button class="btn btn-secondary" onclick="startOAuth()">Connect via Wix OAuth App</button>
+  </div>
+
+  <script>
+    async function checkAuth() {
+      const res = await fetch("/api/auth/me");
+      if (!res.ok) window.location.href = "login.html";
+    }
+
+    async function connectApiKey() {
+      const apiKey = document.getElementById("apiKey").value.trim();
+      const siteId = document.getElementById("siteId").value.trim();
+      const btn = document.getElementById("connect-btn");
+      const result = document.getElementById("result");
+
+      if (!apiKey || !siteId) {
+        result.innerHTML = `<span class="text-error">Please fill in both the API Key and Site ID.</span>`;
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = "Verifying with Wix API...";
+      result.innerHTML = `<span class="hint">Testing site connection and verifying permissions...</span>`;
+
+      try {
+        const res = await fetch("/api/wix/connect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apiKey, siteId }),
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+          result.innerHTML = `
+            <div style="background:#dff4eb; padding:16px; border-radius:8px; border:1px solid #bce6d5;">
+              <strong class="text-success">✅ Successfully Connected & Verified!</strong>
+              <p style="margin:8px 0 0; font-size:14px;">Connected to: <strong>${data.siteInfo.siteDisplayName}</strong> (${data.siteInfo.url || 'URL pending'})</p>
+              <p class="hint" style="margin:4px 0 0;">Redirecting to dashboard...</p>
+            </div>
+          `;
+          setTimeout(() => (window.location.href = "dashboard.html"), 1200);
+        } else {
+          btn.disabled = false;
+          btn.textContent = "Verify & Connect Website";
+          result.innerHTML = `<div class="text-error" style="background:#fff0eb; padding:14px; border-radius:6px; border:1px solid #f9d3ca;">❌ ${data.error}</div>`;
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "Verify & Connect Website";
+        result.innerHTML = `<div class="text-error">Network error: ${err.message}</div>`;
+      }
+    }
+
+    async function startOAuth() {
+      try {
+        const res = await fetch("/api/wix/oauth/start");
+        const data = await res.json();
+        if (res.ok && data.installerUrl) {
+          window.location.href = data.installerUrl;
+        } else {
+          alert(data.error || "Wix OAuth is not yet configured with a WIX_APP_ID in backend/.env.");
+        }
+      } catch (err) {
+        alert("Failed to start OAuth: " + err.message);
+      }
+    }
+
+    checkAuth();
+  </script>
+  <script src="app.js"></script>
+</body>
+</html>

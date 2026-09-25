@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dashboard — Wix Management Platform</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="dashboard-page">
+  <nav>
+    <a class="active" href="dashboard.html">Dashboard</a>
+    <a href="connect-wix.html">Connect Wix</a>
+    <a href="wix-posts.html">Wix Blog Manager</a>
+    <a href="create-blog.html">Create Post</a>
+    <a href="import-sheets.html">Import Sheets</a>
+    <a href="history.html">History & Queue</a>
+    <button class="logout" type="button" onclick="logout()">Log out</button>
+  </nav>
+
+  <p class="eyebrow">Workspace Overview</p>
+  <h1>Client Website Dashboard</h1>
+  <p class="lede">Manage the connected Wix site, monitor authorized permissions, and publish content without sharing passwords.</p>
+
+  <!-- Site Connection Overview Card -->
+  <div class="card" id="connection-card">
+    <div class="card-header">
+      <h2 style="margin:0;">Wix Site Connection</h2>
+      <span id="conn-badge" class="badge badge-neutral">Checking status...</span>
+    </div>
+    <div id="conn-details">Loading connection information...</div>
+  </div>
+
+  <!-- Quick Stats -->
+  <div class="stats-grid" id="stats-area" style="display:none;">
+    <div class="stat-card">
+      <div class="stat-num" id="stat-published">-</div>
+      <div class="stat-label">Live Wix Posts</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num" id="stat-drafts">-</div>
+      <div class="stat-label">Wix Drafts</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num" id="stat-local-queue">-</div>
+      <div class="stat-label">Scheduled / In Queue</div>
+    </div>
+  </div>
+
+  <!-- Permission Audit & Security Card -->
+  <div class="card" id="permissions-card" style="display:none;">
+    <div class="card-header">
+      <h3 style="margin:0;">Authorized Permissions</h3>
+      <button class="btn btn-secondary btn-sm" onclick="retestConnection()">Re-test Permissions</button>
+    </div>
+    <p class="hint">Wix grants access on a granular scope basis. Here is what this app is authorized to manage:</p>
+    <div id="permissions-list" style="margin-top:12px;"></div>
+  </div>
+
+  <!-- Security Protocol Summary -->
+  <div class="card">
+    <h3>Zero-Credential Security Architecture</h3>
+    <p class="hint">
+      The client never shares their Wix email or password. Access is granted either via a <strong>Site-Scoped API Key</strong> or the <strong>Wix App OAuth 2.0 flow</strong>. All tokens and keys are encrypted at rest with <strong>AES-256 (Fernet)</strong> in PostgreSQL and decrypted strictly in memory during live Wix API calls.
+    </p>
+  </div>
+
+  <script>
+    async function checkAuth() {
+      const res = await fetch("/api/auth/me");
+      if (!res.ok) window.location.href = "login.html";
+    }
+
+    async function loadDashboard() {
+      try {
+        const res = await fetch("/api/wix/status");
+        const data = await res.json();
+        const badge = document.getElementById("conn-badge");
+        const details = document.getElementById("conn-details");
+        const statsArea = document.getElementById("stats-area");
+        const permCard = document.getElementById("permissions-card");
+
+        if (!data.connected) {
+          badge.className = "badge badge-warning";
+          badge.textContent = "NOT CONNECTED";
+          details.innerHTML = `
+            <p>No Wix website is currently connected to this account.</p>
+            <p class="hint">Clients can securely link their site via a site-scoped API key or 1-click Wix App installation.</p>
+            <a href="connect-wix.html" class="btn">Connect Wix Website Now</a>
+          `;
+          statsArea.style.display = "none";
+          permCard.style.display = "none";
+          return;
+        }
+
+        badge.className = "badge badge-success";
+        badge.textContent = "CONNECTED & VERIFIED";
+
+        details.innerHTML = `
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:16px; margin: 12px 0 16px;">
+            <div><strong>Site Name:</strong> ${data.siteName || 'Wix Site'}</div>
+            <div><strong>Site ID:</strong> <code>${data.siteId}</code></div>
+            <div><strong>Auth Type:</strong> ${data.authType.toUpperCase()}</div>
+            <div><strong>Live Website:</strong> ${data.siteUrl ? `<a href="${data.siteUrl}" target="_blank">${data.siteUrl} ↗</a>` : 'Not published'}</div>
+          </div>
+          <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
+            <a href="wix-posts.html" class="btn">Manage Blog Posts ↗</a>
+            <a href="create-blog.html" class="btn btn-secondary">+ Create Post</a>
+            <button class="btn btn-danger btn-sm" onclick="disconnectWix()">Disconnect Site</button>
+          </div>
+        `;
+
+        statsArea.style.display = "grid";
+        permCard.style.display = "block";
+        renderPermissions(data.permissions);
+
+        // Fetch counts
+        loadCounts();
+      } catch (err) {
+        document.getElementById("conn-details").innerHTML = `<span class="text-error">Error connecting to backend database: ${err.message}</span>`;
+      }
+    }
+
+    function renderPermissions(perms) {
+      const container = document.getElementById("permissions-list");
+      if (!perms || Object.keys(perms).length === 0) {
+        container.innerHTML = `<span class="hint">Run a permission test to view verified scopes.</span>`;
+        return;
+      }
+
+      const items = [
+        { key: 'blog_management', label: 'Blog Management (Create, Edit, Delete, Publish)', ok: perms.blog_management },
+        { key: 'site_properties', label: 'Site Properties (Site Name, URL, Status)', ok: perms.site_properties },
+        { key: 'site_media', label: 'Site Media (Featured Image Uploads)', ok: perms.site_media },
+        { key: 'members_read', label: 'Site Members (Author Assignment)', ok: perms.members_read },
+      ];
+
+      container.innerHTML = items.map(i => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #eef2ef;">
+          <span>${i.label}</span>
+          <span class="badge ${i.ok ? 'badge-success' : 'badge-warning'}">${i.ok ? 'AUTHORIZED' : 'MISSING / LIMITED'}</span>
+        </div>
+      `).join('');
+    }
+
+    async function loadCounts() {
+      try {
+        const postsRes = await fetch("/api/wix/posts");
+        if (postsRes.ok) {
+          const postsData = await postsRes.json();
+          document.getElementById("stat-published").textContent = postsData.totalPublished || 0;
+          document.getElementById("stat-drafts").textContent = postsData.totalDrafts || 0;
+        }
+
+        const localRes = await fetch("/api/blogs");
+        if (localRes.ok) {
+          const localData = await localRes.json();
+          const scheduled = localData.filter(b => b.status === 'scheduled').length;
+          document.getElementById("stat-local-queue").textContent = scheduled;
+        }
+      } catch (e) {
+        console.error("Count load error:", e);
+      }
+    }
+
+    async function retestConnection() {
+      const res = await fetch("/api/wix/test-connection", { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        renderPermissions(data.permissions);
+        alert("Connection and permissions re-verified with Wix successfully!");
+      } else {
+        alert("Verification failed: " + (data.error || "Could not reach Wix."));
+      }
+    }
+
+    async function disconnectWix() {
+      if (!confirm("Are you sure you want to disconnect this Wix website? All encrypted keys will be purged from our database.")) return;
+      const res = await fetch("/api/wix/disconnect", { method: 'POST' });
+      if (res.ok) {
+        alert("Wix website disconnected.");
+        loadDashboard();
+      }
+    }
+
+    checkAuth();
+    loadDashboard();
+  </script>
+  <script src="app.js"></script>
+</body>
+</html>
