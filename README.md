@@ -126,6 +126,20 @@ python app.py
 ```
 Visit `http://localhost:5000` to access the application.
 
+## Deploying on Render
+
+This repository includes `render.yaml` for a Render Blueprint deployment. From the Render dashboard:
+
+1. Select **New → Blueprint** and connect the GitHub repository.
+2. Apply the Blueprint. It creates the Flask web service and PostgreSQL database and generates `SESSION_SECRET`.
+3. In the web service environment, set `ENCRYPTION_KEY` to a Fernet key generated with:
+  `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+4. After the web service has a public URL, set `WIX_REDIRECT_URI` in the web service environment to:
+  `https://YOUR-RENDER-DOMAIN.onrender.com/api/wix/oauth/callback`
+5. If using Wix OAuth, also register that exact callback URL in the Wix app and set `WIX_APP_ID` and `WIX_APP_SECRET` in Render.
+
+The API-key connection flow works without the optional Wix OAuth variables. Render supplies `DATABASE_URL` automatically from the managed PostgreSQL database.
+
 ---
 
 ## Features Built

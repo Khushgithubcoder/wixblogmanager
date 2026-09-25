@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: wix-blog-manager
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: gunicorn --chdir backend app:app
+    healthCheckPath: /
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: wix-blog-db
+          property: connectionString
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        sync: false
+
+databases:
+  - name: wix-blog-db
+    databaseName: wix_db
+    user: wix_user
+    plan: free
