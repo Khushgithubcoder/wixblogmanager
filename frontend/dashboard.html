@@ -130,7 +130,9 @@
       }
     }
 
-    if (await checkAuth()) await loadDashboard();
+    document.addEventListener("DOMContentLoaded", async () => {
+      if (await checkAuth()) await loadDashboard();
+    }, { once: true });
   </script>
   <script src="app.js"></script>
 </body>
