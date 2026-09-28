@@ -22,42 +22,6 @@
 
   <!-- Connection Form Card -->
   <div class="card">
-    <div class="card-header">
-      <h2 style="margin:0;">Method 1: Site-Scoped Wix API Key (Direct & Self-Serve)</h2>
-      <span class="badge badge-success">Recommended</span>
-    </div>
-    
-    <div class="steps-container">
-      <div class="step-row">
-        <div class="step-num">1</div>
-        <div class="step-content">
-          <strong>Open API Keys Manager in your Wix Account:</strong><br />
-          Log into Wix and navigate to <em>Account Settings → API Keys Manager</em> (or your site's developer settings).
-        </div>
-      </div>
-      <div class="step-row">
-        <div class="step-num">2</div>
-        <div class="step-content">
-          <strong>Generate New Key with Required Scopes:</strong><br />
-          Select <strong>Manage Blog</strong> (to create/edit/publish posts), <strong>Read Site Properties</strong>, and <strong>Read Members</strong>.
-        </div>
-      </div>
-      <div class="step-row">
-        <div class="step-num">3</div>
-        <div class="step-content">
-          <strong>Scope to One Site:</strong><br />
-          Under <em>Site Access</em>, select only the specific website you want us to manage. Copy the key immediately (Wix shows it only once).
-        </div>
-      </div>
-      <div class="step-row">
-        <div class="step-num">4</div>
-        <div class="step-content">
-          <strong>Get Site ID:</strong><br />
-          Found in your Wix Dashboard browser URL: <code>wix.com/dashboard/<strong>{SITE_ID}</strong>/...</code>
-        </div>
-      </div>
-    </div>
-
     <label for="apiKey">Wix API Key</label>
     <input id="apiKey" type="password" placeholder="wix_api_..." autocomplete="off" />
 
@@ -67,18 +31,6 @@
     <button id="connect-btn" onclick="connectApiKey()">Verify & Connect Website</button>
 
     <div id="result" style="margin-top:16px;"></div>
-  </div>
-
-  <!-- OAuth 2.0 Card -->
-  <div class="card">
-    <div class="card-header">
-      <h2 style="margin:0;">Method 2: Wix App OAuth 2.0 (1-Click App Install)</h2>
-      <span class="badge badge-neutral">App Flow</span>
-    </div>
-    <p class="hint">
-      If you are connecting via a registered Wix App, you can install the app directly onto your site with a single authorization click.
-    </p>
-    <button class="btn btn-secondary" onclick="startOAuth()">Connect via Wix OAuth App</button>
   </div>
 
   <script>
@@ -128,20 +80,6 @@
         btn.disabled = false;
         btn.textContent = "Verify & Connect Website";
         result.innerHTML = `<div class="text-error">Network error: ${err.message}</div>`;
-      }
-    }
-
-    async function startOAuth() {
-      try {
-        const res = await fetch("/api/wix/oauth/start");
-        const data = await res.json();
-        if (res.ok && data.installerUrl) {
-          window.location.href = data.installerUrl;
-        } else {
-          alert(data.error || "Wix OAuth is not yet configured with a WIX_APP_ID in backend/.env.");
-        }
-      } catch (err) {
-        alert("Failed to start OAuth: " + err.message);
       }
     }
 

@@ -138,6 +138,7 @@
             </div>
             <div class="post-actions">
               ${previewUrl ? `<a href="${previewUrl}" target="_blank" class="btn btn-secondary btn-sm">Preview ↗</a>` : ''}
+              <a href="create-blog.html?editId=${encodeURIComponent(item.id)}&isDraft=${isDraft}" class="btn btn-secondary btn-sm">Edit</a>
               ${isDraft ? `<button class="btn btn-sm" onclick="publishDraft('${item.id}')">Publish Now</button>` : ''}
               <button class="btn btn-danger btn-sm" onclick="deletePost('${item.id}', ${isDraft})">Delete</button>
             </div>

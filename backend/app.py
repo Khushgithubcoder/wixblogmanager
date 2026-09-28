@@ -323,6 +323,47 @@ def create_wix_post():
     except Exception as e:
         return jsonify({"error": f"Failed to create post on Wix: {e}"}), 500
 
+@app.get("/api/wix/posts/<post_id>")
+@login_required
+def get_wix_post(post_id):
+    """Fetch one published post or draft for the edit form."""
+    auth_token, site_id, auth_type = get_active_wix_auth(session["user_id"])
+    if not auth_token or not site_id:
+        return jsonify({"error": "Wix site not connected."}), 400
+
+    is_draft = request.args.get("isDraft", "false").lower() == "true"
+    try:
+        post = (
+            wix_api.get_draft_post(auth_token, site_id, post_id, auth_type=auth_type)
+            if is_draft
+            else wix_api.get_post(auth_token, site_id, post_id, auth_type=auth_type)
+        )
+        return jsonify(post)
+    except Exception as e:
+        return jsonify({"error": f"Failed to load Wix post: {e}"}), 500
+
+@app.patch("/api/wix/posts/<post_id>")
+@login_required
+def update_wix_post(post_id):
+    """Update a published post or draft without changing its status."""
+    auth_token, site_id, auth_type = get_active_wix_auth(session["user_id"])
+    if not auth_token or not site_id:
+        return jsonify({"error": "Wix site not connected."}), 400
+
+    data = request.get_json(force=True)
+    title = data.get("title", "").strip()
+    content = data.get("content", "").strip()
+    if not title or not content:
+        return jsonify({"error": "Title and content are required."}), 400
+
+    is_draft = request.args.get("isDraft", "false").lower() == "true"
+    try:
+        wix_api.update_post(auth_token, site_id, post_id, title, content, is_draft=is_draft, auth_type=auth_type)
+        db.record_audit_log(session["user_id"], "UPDATED_WIX_POST", {"postId": post_id, "isDraft": is_draft})
+        return jsonify({"success": True, "isDraft": is_draft})
+    except Exception as e:
+        return jsonify({"error": f"Failed to update Wix post: {e}"}), 500
+
 @app.post("/api/wix/drafts/<draft_id>/publish")
 @login_required
 def publish_existing_wix_draft(draft_id):

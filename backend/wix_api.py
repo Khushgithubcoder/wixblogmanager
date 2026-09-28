@@ -236,6 +236,16 @@ def get_post(auth_token: str, site_id: str, post_id: str, auth_type: str = "api_
     resp.raise_for_status()
     return resp.json().get("post", {})
 
+def get_draft_post(auth_token: str, site_id: str, draft_post_id: str, auth_type: str = "api_key") -> Dict[str, Any]:
+    """Retrieve a single Wix draft post by ID."""
+    resp = requests.get(
+        f"{WIX_API_BASE}/blog/v3/draft-posts/{draft_post_id}",
+        headers=_headers(auth_token, site_id, auth_type),
+        timeout=12,
+    )
+    resp.raise_for_status()
+    return resp.json().get("draftPost", {})
+
 def create_draft_post(
     auth_token: str,
     site_id: str,
@@ -375,6 +385,41 @@ def update_draft_post(
     )
     if not resp.ok:
         raise RuntimeError(f"Failed to update Wix draft: {resp.status_code} {resp.text}")
+    return True
+
+def update_post(
+    auth_token: str,
+    site_id: str,
+    post_id: str,
+    title: str,
+    content: str,
+    is_draft: bool = False,
+    auth_type: str = "api_key",
+) -> bool:
+    """Update a published post or draft while preserving its current status."""
+    post_data = {
+        "title": title,
+        "richContent": {
+            "nodes": [
+                {
+                    "type": "PARAGRAPH",
+                    "id": "p1",
+                    "nodes": [{"type": "TEXT", "id": "", "nodes": [], "textData": {"text": content, "decorations": []}}],
+                    "paragraphData": {},
+                }
+            ]
+        },
+    }
+    resource = "draft-posts" if is_draft else "posts"
+    resource_key = "draftPost" if is_draft else "post"
+    resp = requests.patch(
+        f"{WIX_API_BASE}/blog/v3/{resource}/{post_id}",
+        headers=_headers(auth_token, site_id, auth_type),
+        json={resource_key: post_data},
+        timeout=15,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Failed to update Wix post: {resp.status_code} {resp.text}")
     return True
 
 def delete_post(auth_token: str, site_id: str, post_id: str, is_draft: bool = False, auth_type: str = "api_key") -> bool:

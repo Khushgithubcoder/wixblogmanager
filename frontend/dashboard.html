@@ -18,7 +18,7 @@
 
   <p class="eyebrow">Workspace Overview</p>
   <h1>Client Website Dashboard</h1>
-  <p class="lede">Manage the connected Wix site, monitor authorized permissions, and publish content without sharing passwords.</p>
+  <p class="lede">Manage the connected Wix site and publish content without sharing passwords.</p>
 
   <!-- Site Connection Overview Card -->
   <div class="card" id="connection-card">
@@ -45,24 +45,6 @@
     </div>
   </div>
 
-  <!-- Permission Audit & Security Card -->
-  <div class="card" id="permissions-card" style="display:none;">
-    <div class="card-header">
-      <h3 style="margin:0;">Authorized Permissions</h3>
-      <button class="btn btn-secondary btn-sm" onclick="retestConnection()">Re-test Permissions</button>
-    </div>
-    <p class="hint">Wix grants access on a granular scope basis. Here is what this app is authorized to manage:</p>
-    <div id="permissions-list" style="margin-top:12px;"></div>
-  </div>
-
-  <!-- Security Protocol Summary -->
-  <div class="card">
-    <h3>Zero-Credential Security Architecture</h3>
-    <p class="hint">
-      The client never shares their Wix email or password. Access is granted either via a <strong>Site-Scoped API Key</strong> or the <strong>Wix App OAuth 2.0 flow</strong>. All tokens and keys are encrypted at rest with <strong>AES-256 (Fernet)</strong> in PostgreSQL and decrypted strictly in memory during live Wix API calls.
-    </p>
-  </div>
-
   <script>
     async function checkAuth() {
       const res = await fetch("/api/auth/me");
@@ -76,7 +58,6 @@
         const badge = document.getElementById("conn-badge");
         const details = document.getElementById("conn-details");
         const statsArea = document.getElementById("stats-area");
-        const permCard = document.getElementById("permissions-card");
 
         if (!data.connected) {
           badge.className = "badge badge-warning";
@@ -87,7 +68,6 @@
             <a href="connect-wix.html" class="btn">Connect Wix Website Now</a>
           `;
           statsArea.style.display = "none";
-          permCard.style.display = "none";
           return;
         }
 
@@ -109,36 +89,12 @@
         `;
 
         statsArea.style.display = "grid";
-        permCard.style.display = "block";
-        renderPermissions(data.permissions);
 
         // Fetch counts
         loadCounts();
       } catch (err) {
         document.getElementById("conn-details").innerHTML = `<span class="text-error">Error connecting to backend database: ${err.message}</span>`;
       }
-    }
-
-    function renderPermissions(perms) {
-      const container = document.getElementById("permissions-list");
-      if (!perms || Object.keys(perms).length === 0) {
-        container.innerHTML = `<span class="hint">Run a permission test to view verified scopes.</span>`;
-        return;
-      }
-
-      const items = [
-        { key: 'blog_management', label: 'Blog Management (Create, Edit, Delete, Publish)', ok: perms.blog_management },
-        { key: 'site_properties', label: 'Site Properties (Site Name, URL, Status)', ok: perms.site_properties },
-        { key: 'site_media', label: 'Site Media (Featured Image Uploads)', ok: perms.site_media },
-        { key: 'members_read', label: 'Site Members (Author Assignment)', ok: perms.members_read },
-      ];
-
-      container.innerHTML = items.map(i => `
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #eef2ef;">
-          <span>${i.label}</span>
-          <span class="badge ${i.ok ? 'badge-success' : 'badge-warning'}">${i.ok ? 'AUTHORIZED' : 'MISSING / LIMITED'}</span>
-        </div>
-      `).join('');
     }
 
     async function loadCounts() {
@@ -158,17 +114,6 @@
         }
       } catch (e) {
         console.error("Count load error:", e);
-      }
-    }
-
-    async function retestConnection() {
-      const res = await fetch("/api/wix/test-connection", { method: 'POST' });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        renderPermissions(data.permissions);
-        alert("Connection and permissions re-verified with Wix successfully!");
-      } else {
-        alert("Verification failed: " + (data.error || "Could not reach Wix."));
       }
     }
 

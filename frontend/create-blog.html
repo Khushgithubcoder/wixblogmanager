@@ -17,7 +17,7 @@
   </nav>
 
   <p class="eyebrow">Content Authoring</p>
-  <h1>Create & Publish Blog Post</h1>
+  <h1 id="page-title">Create & Publish Blog Post</h1>
   <p class="lede">Write content, add featured imagery, and publish directly to the connected Wix site or schedule for future automated release.</p>
 
   <div class="card">
@@ -33,10 +33,15 @@
       <img id="preview-img" src="" alt="Cover preview" style="max-height:180px; border-radius:8px; border:1px solid #d4d8d1;" />
     </div>
 
-    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;">
+    <div id="create-actions" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;">
       <button onclick="publishToWixNow()">Publish Directly to Wix</button>
       <button class="btn btn-secondary" onclick="createWixDraft()">Save as Wix Draft</button>
       <button class="btn btn-secondary" onclick="saveLocalDraft()">Save Local Draft</button>
+    </div>
+
+    <div id="edit-actions" style="display:none; gap:10px; flex-wrap:wrap; margin-top:10px;">
+      <button onclick="saveWixEdit()">Save Changes</button>
+      <a href="wix-posts.html" class="btn btn-secondary">Cancel</a>
     </div>
 
     <!-- Scheduling section -->
@@ -52,6 +57,10 @@
   </div>
 
   <script>
+    const editParams = new URLSearchParams(window.location.search);
+    const editId = editParams.get("editId");
+    const editIsDraft = editParams.get("isDraft") === "true";
+
     async function checkAuth() {
       const res = await fetch("/api/auth/me");
       if (!res.ok) window.location.href = "login.html";
@@ -78,6 +87,67 @@
         return null;
       }
       return { title, content, imageUrl };
+    }
+
+    function extractPostText(value) {
+      if (!value) return "";
+      if (typeof value === "string") return value;
+      if (Array.isArray(value)) return value.map(extractPostText).join("");
+      if (value.textData && value.textData.text) return value.textData.text;
+      if (value.nodes) return extractPostText(value.nodes);
+      return "";
+    }
+
+    async function readApiResponse(res) {
+      const body = await res.text();
+      try {
+        return body ? JSON.parse(body) : {};
+      } catch {
+        throw new Error(`Server returned an unexpected response (${res.status}). Please refresh and try again.`);
+      }
+    }
+
+    async function loadEditPost() {
+      if (!editId) return;
+
+      document.getElementById("page-title").textContent = editIsDraft ? "Edit Wix Draft" : "Edit Published Wix Post";
+      document.getElementById("create-actions").style.display = "none";
+      document.getElementById("edit-actions").style.display = "flex";
+      document.getElementById("scheduledFor").closest("div").parentElement.style.display = "none";
+      document.getElementById("result").innerHTML = `<span class="hint">Loading post from Wix...</span>`;
+
+      try {
+        const res = await fetch(`/api/wix/posts/${encodeURIComponent(editId)}?isDraft=${editIsDraft}`);
+        const post = await readApiResponse(res);
+        if (!res.ok) throw new Error(post.error || "Failed to load post.");
+
+        document.getElementById("title").value = post.title || "";
+        document.getElementById("content").value = extractPostText(post.richContent || post.content);
+        document.getElementById("result").textContent = "";
+      } catch (err) {
+        document.getElementById("result").innerHTML = `<span class="text-error">${err.message}</span>`;
+      }
+    }
+
+    async function saveWixEdit() {
+      const data = getFormData();
+      if (!data) return;
+
+      const result = document.getElementById("result");
+      result.innerHTML = `<span class="hint">Saving changes to Wix...</span>`;
+      try {
+        const res = await fetch(`/api/wix/posts/${encodeURIComponent(editId)}?isDraft=${editIsDraft}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        });
+        const response = await readApiResponse(res);
+        if (!res.ok) throw new Error(response.error || "Failed to save changes.");
+
+        result.innerHTML = `<span class="text-success">${editIsDraft ? "Draft" : "Published post"} updated successfully.</span>`;
+      } catch (err) {
+        result.innerHTML = `<span class="text-error">${err.message}</span>`;
+      }
     }
 
     async function publishToWixNow() {
@@ -195,6 +265,7 @@
     }
 
     checkAuth();
+    loadEditPost();
   </script>
   <script src="app.js"></script>
 </body>
