@@ -48,7 +48,11 @@
   <script>
     async function checkAuth() {
       const res = await fetch("/api/auth/me");
-      if (!res.ok) window.location.href = "login.html";
+      if (!res.ok) {
+        window.location.href = "login.html";
+        return false;
+      }
+      return true;
     }
 
     async function loadDashboard() {
@@ -126,8 +130,7 @@
       }
     }
 
-    checkAuth();
-    loadDashboard();
+    if (await checkAuth()) await loadDashboard();
   </script>
   <script src="app.js"></script>
 </body>
