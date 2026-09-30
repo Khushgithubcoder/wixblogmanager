@@ -157,11 +157,3 @@ The API-key connection flow works without the optional Wix OAuth variables. Rend
    * Background automated scheduler for future publication
 5. **Batch Import (`import-sheets.html`)**: Import multiple articles from published Google Sheets CSV.
 6. **Activity Log & Audit Trail (`history.html`)**: Complete log of all management actions performed on Wix.
-
-
-**SAMPLE API KEY** IST.eyJraWQiOiJQb3pIX2FDMiIsImFsZyI6IlJTMjU2In0.eyJkYXRhIjoie1wiaWRcIjpcImI1NDY4OGQ3LTRmMjItNGRkOC1hNjM3LTI0YjliNDZlZDk1MlwiLFwiaWRlbnRpdHlcIjp7XCJ0eXBlXCI6XCJhcHBsaWNhdGlvblwiLFwiaWRcIjpcIjhhMjJkZWMwLTQ0MjctNGVhYS05ODQ1LWZlMjljNDkwMjE5YVwifSxcInRlbmFudFwiOntcInR5cGVcIjpcImFjY291bnRcIixcImlkXCI6XCJlMzkzMjhiOC0yYWM2LTQyNGYtOTA5Zi1jNmZiNzZjZjAxNjZcIn19IiwiaWF0IjoxNzkwMjc0NjgzfQ.RflM4RPPDdkOMHlHpkfOhPmIErPFLJKNPYI88XmDzfa3IizDIx-pnO2tHmBsm3-gbUaApKa_4iZPOjWiCxSzeF7rmynBf-msD0cGj9CnkuzAnCE0UHi-mjYfQEUuh2a-CfB76E7KcjJ786fM-VazMfW3eT92hhksR_PAnFUedQvvVdXXB31ph0Sq_BCZEdlPI_aIhzPBiUXSwRPClIGlCJvA3TQ2U1iBUXAKu7URG-GJtyRqfOLfPl6LbjjX0VhTrROykTtTe9J1D5TgJQmG2wZvZyIQuiWOgSyE4dyguHchOV5MmPhKdEgdwa-sb7H-mVtkbcHYxhZU0VLhogb_wA
-
-
-**SAMPLE WIX ID**
-
-a29f279e-7b85-45c2-8a14-a3a0183e4fcc
