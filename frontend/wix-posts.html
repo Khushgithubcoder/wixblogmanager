@@ -39,7 +39,7 @@
     <div id="empty-state" class="hint" style="display:none; padding:20px; text-align:center;">No posts found in this section.</div>
   </div>
 
-  <script>
+  <script type="module">
     let activeTab = 'published';
     let publishedPosts = [];
     let draftPosts = [];
@@ -119,10 +119,14 @@
 
       container.innerHTML = list.map(item => {
         const isDraft = activeTab === 'drafts';
-        const dateStr = isDraft 
-          ? (item.lastModified ? `Updated: ${new Date(item.lastModified).toLocaleDateString()}` : 'Draft')
-          : (item.publishedDate ? `Published: ${new Date(item.publishedDate).toLocaleDateString()}` : 'Live');
-        
+        let dateStr = isDraft ? 'Draft' : 'Live';
+
+        if (isDraft && item.lastModified) {
+          dateStr = `Updated: ${new Date(item.lastModified).toLocaleDateString()}`;
+        } else if (!isDraft && item.publishedDate) {
+          dateStr = `Published: ${new Date(item.publishedDate).toLocaleDateString()}`;
+        }
+
         const previewUrl = siteUrl && item.slug ? `${siteUrl.replace(/\/$/, '')}/post/${item.slug}` : null;
 
         return `
@@ -179,8 +183,8 @@
       return div.innerHTML;
     }
 
-    checkAuth();
-    loadPosts();
+    await checkAuth();
+    await loadPosts();
   </script>
   <script src="app.js"></script>
 </body>

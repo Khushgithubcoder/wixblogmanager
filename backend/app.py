@@ -61,6 +61,7 @@ if IS_PROD:
 SIGNUP_INVITE_CODE = os.environ.get("SIGNUP_INVITE_CODE", "").strip()
 ACCESS_TOKEN_SKEW_SECONDS = 60
 OAUTH_STATE_TTL_SECONDS = 15 * 60
+BLOG_NOT_FOUND_ERROR = "Blog not found."
 
 # Initialize PostgreSQL tables
 db.init_db()
@@ -196,7 +197,7 @@ def healthz():
 
 # --- User Authentication Routes ----------------------------------------------
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 _DUMMY_HASH = generate_password_hash("not-a-real-password")
 
 
@@ -588,7 +589,7 @@ def publish_local_blog(blog_id):
     if not blog:
         existing = db.get_blog(blog_id)
         if not existing or existing["user_id"] != session["user_id"]:
-            return jsonify({"error": "Blog not found."}), 404
+            return jsonify({"error": BLOG_NOT_FOUND_ERROR}), 404
         return jsonify({"error": f"This post is already {existing['status']}."}), 409
 
     try:
@@ -621,7 +622,7 @@ def schedule_local_blog(blog_id):
 
     blog = db.get_blog(blog_id)
     if not blog or blog["user_id"] != session["user_id"]:
-        return jsonify({"error": "Blog not found."}), 404
+        return jsonify({"error": BLOG_NOT_FOUND_ERROR}), 404
     if blog["status"] in ("publishing", "published"):
         return jsonify({"error": f"This post is already {blog['status']}."}), 409
 
@@ -635,7 +636,7 @@ def schedule_local_blog(blog_id):
 def delete_local_blog(blog_id):
     blog = db.get_blog(blog_id)
     if not blog or blog["user_id"] != session["user_id"]:
-        return jsonify({"error": "Blog not found."}), 404
+        return jsonify({"error": BLOG_NOT_FOUND_ERROR}), 404
     db.delete_blog(blog_id)
     return jsonify({"success": True})
 
@@ -697,6 +698,15 @@ def fetch_public_csv(url: str) -> str:
     raise CsvFetchError("Too many redirects.")
 
 
+def _sheet_row_to_blog(row):
+    title = (row.get("title") or row.get("Title") or "").strip()[:MAX_TITLE]
+    content = (row.get("content") or row.get("Content") or "").strip()[:100_000]
+    image_url = (row.get("image") or row.get("image_url") or row.get("Image") or "").strip() or None
+    if image_url and not re.match(r"^https?://", image_url):
+        image_url = None
+    return title, content, image_url
+
+
 @app.post("/api/sheets/import")
 @login_required
 def import_sheet():
@@ -710,14 +720,11 @@ def import_sheet():
         for row in csv.DictReader(io.StringIO(text)):
             if imported >= CSV_MAX_ROWS:
                 break
-            title = (row.get("title") or row.get("Title") or "").strip()[:MAX_TITLE]
-            content = (row.get("content") or row.get("Content") or "").strip()[:100_000]
-            image_url = (row.get("image") or row.get("image_url") or row.get("Image") or "").strip() or None
-            if image_url and not re.match(r"^https?://", image_url):
-                image_url = None
-            if title and content:
-                db.save_blog(session["user_id"], title, content, image_url=image_url)
-                imported += 1
+            title, content, image_url = _sheet_row_to_blog(row)
+            if not (title and content):
+                continue
+            db.save_blog(session["user_id"], title, content, image_url=image_url)
+            imported += 1
         db.record_audit_log(session["user_id"], "IMPORTED_SHEETS", {"importedCount": imported})
         return jsonify({"imported": imported})
     except CsvFetchError as e:
