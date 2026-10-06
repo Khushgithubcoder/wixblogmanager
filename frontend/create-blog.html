@@ -25,7 +25,9 @@
     <input id="title" placeholder="e.g. 10 Essential Strategies for Modern E-Commerce Growth" />
 
     <label for="content">Article Body Content</label>
-    <textarea id="content" rows="10" placeholder="Write or paste your article content here..."></textarea>
+    <textarea id="content" rows="14" placeholder="Write or paste your article here. Blank lines start new paragraphs."></textarea>
+    <p class="hint" style="margin-top:-8px;">Formatting: <code># Heading</code>, <code>- bullet</code>, <code>1. numbered</code>, <code>&gt; quote</code>, <code>**bold**</code>, <code>*italic*</code>, <code>[text](https://link)</code>, <code>---</code> divider.</p>
+    <div id="edit-warning" class="text-error" style="display:none; margin-bottom:12px;"></div>
 
     <label for="imageUrl">Featured Cover Image URL <span class="muted">(Optional — imported automatically to Wix Media Manager)</span></label>
     <input id="imageUrl" placeholder="https://images.unsplash.com/..." oninput="previewImage()" />
@@ -60,6 +62,7 @@
     const editParams = new URLSearchParams(window.location.search);
     const editId = editParams.get("editId");
     const editIsDraft = editParams.get("isDraft") === "true";
+    let originalContent = "";
 
     async function checkAuth() {
       const res = await fetch("/api/auth/me");
@@ -89,13 +92,11 @@
       return { title, content, imageUrl };
     }
 
-    function extractPostText(value) {
-      if (!value) return "";
-      if (typeof value === "string") return value;
-      if (Array.isArray(value)) return value.map(extractPostText).join("");
-      if (value.textData && value.textData.text) return value.textData.text;
-      if (value.nodes) return extractPostText(value.nodes);
-      return "";
+    function errorHtml(resData, prefix) {
+      const msg = `${escapeHtml(prefix)}: ${escapeHtml(resData.error)}`;
+      return resData.code === "AUTHOR_REQUIRED"
+        ? `<div class="text-error">${msg} <a href="dashboard.html">Choose the author on the dashboard ↗</a></div>`
+        : `<div class="text-error">${msg}</div>`;
     }
 
     async function readApiResponse(res) {
@@ -122,7 +123,14 @@
         if (!res.ok) throw new Error(post.error || "Failed to load post.");
 
         document.getElementById("title").value = post.title || "";
-        document.getElementById("content").value = extractPostText(post.richContent || post.content);
+        document.getElementById("content").value = post.contentText || "";
+        originalContent = document.getElementById("content").value;
+        if (post.unsupportedContent && post.unsupportedContent.length) {
+          const w = document.getElementById("edit-warning");
+          w.style.display = "block";
+          w.textContent = "This post contains content this editor can't show (" + post.unsupportedContent.join(", ").toLowerCase() +
+            "). Editing the title is safe; if you change the body text, that content will be replaced.";
+        }
         document.getElementById("result").textContent = "";
       } catch (err) {
         document.getElementById("result").innerHTML = `<span class="text-error">${err.message}</span>`;
@@ -132,6 +140,9 @@
     async function saveWixEdit() {
       const data = getFormData();
       if (!data) return;
+      // Only send the body if it was actually edited, so media in the post isn't wiped by a title change.
+      const payload = { title: data.title };
+      if (data.content !== originalContent.trim()) payload.content = data.content;
 
       const result = document.getElementById("result");
       result.innerHTML = `<span class="hint">Saving changes to Wix...</span>`;
@@ -139,11 +150,12 @@
         const res = await fetch(`/api/wix/posts/${encodeURIComponent(editId)}?isDraft=${editIsDraft}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data),
+          body: JSON.stringify(payload),
         });
         const response = await readApiResponse(res);
         if (!res.ok) throw new Error(response.error || "Failed to save changes.");
 
+        originalContent = data.content;
         result.innerHTML = `<span class="text-success">${editIsDraft ? "Draft" : "Published post"} updated successfully.</span>`;
       } catch (err) {
         result.innerHTML = `<span class="text-error">${err.message}</span>`;
@@ -168,12 +180,12 @@
           result.innerHTML = `
             <div style="background:#dff4eb; padding:14px; border-radius:6px; border:1px solid #bce6d5;">
               <strong class="text-success">🎉 Post published live on Wix!</strong>
-              <p style="margin:6px 0 0; font-size:13px;">Wix Post ID: <code>${resData.postId}</code></p>
+              <p style="margin:6px 0 0; font-size:13px;">Wix Post ID: <code>${escapeHtml(resData.postId)}</code></p>
               <a href="wix-posts.html" class="btn btn-sm" style="margin-top:8px;">View in Wix Blog Manager ↗</a>
             </div>
           `;
         } else {
-          result.innerHTML = `<div class="text-error">Error publishing to Wix: ${resData.error}</div>`;
+          result.innerHTML = errorHtml(resData, "Error publishing to Wix");
         }
       } catch (err) {
         result.innerHTML = `<div class="text-error">Network error: ${err.message}</div>`;
@@ -198,12 +210,12 @@
           result.innerHTML = `
             <div style="background:#fdf3d8; padding:14px; border-radius:6px; border:1px solid #f6e2a8;">
               <strong>📝 Created draft on Wix!</strong>
-              <p style="margin:6px 0 0; font-size:13px;">Wix Draft ID: <code>${resData.draftId}</code></p>
+              <p style="margin:6px 0 0; font-size:13px;">Wix Draft ID: <code>${escapeHtml(resData.draftId)}</code></p>
               <a href="wix-posts.html" class="btn btn-sm" style="margin-top:8px;">Review Drafts ↗</a>
             </div>
           `;
         } else {
-          result.innerHTML = `<div class="text-error">Error: ${resData.error}</div>`;
+          result.innerHTML = errorHtml(resData, "Error");
         }
       } catch (err) {
         result.innerHTML = `<div class="text-error">Network error: ${err.message}</div>`;
@@ -249,7 +261,8 @@
       const schedRes = await fetch(`/api/blogs/${saved.id}/schedule`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scheduledFor }),
+        // datetime-local has no timezone; convert to an absolute instant using the browser's zone.
+        body: JSON.stringify({ scheduledFor: new Date(scheduledFor).toISOString() }),
       });
       const schedData = await schedRes.json();
       if (schedRes.ok) {

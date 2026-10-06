@@ -66,17 +66,17 @@
 
         return `
           <div class="post-row">
-            ${b.image_url ? `<img src="${b.image_url}" class="post-cover" />` : `<div class="post-cover" style="display:flex;align-items:center;justify-content:center;color:#999;font-size:12px;">No cover</div>`}
+            ${b.image_url ? `<img src="${/^https?:\/\//.test(b.image_url) ? escapeHtml(b.image_url) : ''}" class="post-cover" />` : `<div class="post-cover" style="display:flex;align-items:center;justify-content:center;color:#999;font-size:12px;">No cover</div>`}
             <div class="post-main">
               <h3 class="post-title">${escapeHtml(b.title)}</h3>
               <div class="post-meta">
                 <span class="badge ${badgeClass}">${b.status.toUpperCase()}</span>
                 ${b.scheduled_for ? `<span>Scheduled: ${b.scheduled_for}</span>` : ''}
-                ${b.wix_post_id ? `<span>Wix ID: <code>${b.wix_post_id}</code></span>` : ''}
+                ${b.wix_post_id ? `<span>Wix ID: <code>${escapeHtml(b.wix_post_id)}</code></span>` : ''}
               </div>
             </div>
             <div class="post-actions">
-              ${b.status !== 'published' ? `<button class="btn btn-sm" onclick="publishNow('${b.id}')">Publish Now</button>` : ''}
+              ${b.status !== 'published' && b.status !== 'publishing' ? `<button class="btn btn-sm" onclick="publishNow('${b.id}')">Publish Now</button>` : ''}
               <button class="btn btn-danger btn-sm" onclick="deleteLocal('${b.id}')">Delete</button>
             </div>
           </div>

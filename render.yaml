@@ -2,22 +2,52 @@ services:
   - type: web
     name: wix-blog-manager
     runtime: python
+    # NOTE (free plan): the service sleeps after ~15 min without traffic, and the in-app
+    # scheduler only runs while it is awake - scheduled posts then publish late, on the next
+    # wake-up. For on-time publishing use a paid plan ("starter") or the cron job below.
     plan: free
     buildCommand: pip install -r backend/requirements.txt
-    startCommand: gunicorn --chdir backend app:app
-    healthCheckPath: /
+    # One worker + threads: the scheduler claims rows atomically, so extra workers are safe too.
+    startCommand: gunicorn --chdir backend --workers 1 --threads 4 --timeout 60 app:app
+    healthCheckPath: /healthz
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: APP_ENV
+        value: production
       - key: DATABASE_URL
         fromDatabase:
           name: wix-blog-db
           property: connectionString
-      - key: SESSION_SECRET
+      - key: SESSION_SECRET        # app refuses to boot in production without a strong value
         generateValue: true
-      - key: ENCRYPTION_KEY
+      - key: ENCRYPTION_KEY        # Fernet key, see README
         sync: false
+      - key: SIGNUP_INVITE_CODE    # sign-ups are disabled unless this is set
+        sync: false
+      - key: WIX_APP_ID
+        sync: false
+      - key: WIX_APP_SECRET
+        sync: false
+      - key: WIX_REDIRECT_URI      # https://<your-domain>/api/wix/oauth/callback
+        sync: false
+      # - key: ENABLE_INAPP_SCHEDULER   # set to "0" if you enable the cron job below
+      #   value: "0"
+
+  # Optional (paid): publishes due posts every minute even while the web service sleeps.
+  # - type: cron
+  #   name: wix-blog-scheduler
+  #   runtime: python
+  #   schedule: "* * * * *"
+  #   buildCommand: pip install -r backend/requirements.txt
+  #   startCommand: python backend/run_scheduler.py
+  #   envVars:  # same DATABASE_URL, ENCRYPTION_KEY, WIX_APP_ID, WIX_APP_SECRET as the web service
 
 databases:
   - name: wix-blog-db
     databaseName: wix_db
     user: wix_user
+    # NOTE (free plan): free Render Postgres expires 30 days after creation (14-day grace
+    # period to upgrade, then the data is deleted) and has no backups. Use "basic-256mb" or
+    # larger for anything you care about.
     plan: free

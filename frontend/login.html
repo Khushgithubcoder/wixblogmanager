@@ -14,8 +14,12 @@
     <input id="email" type="email" placeholder="you@example.com" />
     <label for="password">Password</label>
     <input id="password" type="password" placeholder="Your password" />
+    <div id="invite-row" style="display:none;">
+      <label for="inviteCode">Invite code <span class="muted">(only needed to create an account)</span></label>
+      <input id="inviteCode" type="password" autocomplete="off" placeholder="Invite code" />
+    </div>
     <button onclick="login()">Login</button>
-    <button onclick="signup()">Sign up instead</button>
+    <button id="signup-btn" style="display:none;" onclick="signup()">Sign up instead</button>
     <p id="msg" class="error"></p>
   </div>
 
@@ -23,10 +27,11 @@
     async function submitAuth(path) {
       const email = document.getElementById("email").value;
       const password = document.getElementById("password").value;
+      const inviteCode = document.getElementById("inviteCode").value;
       const res = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, inviteCode }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -37,6 +42,14 @@
     }
     function login() { submitAuth("/api/auth/login"); }
     function signup() { submitAuth("/api/auth/signup"); }
+
+    // Sign-ups are invite-only; only show the option when the server has it enabled.
+    fetch("/api/auth/config").then((r) => r.json()).then((cfg) => {
+      if (cfg.signupEnabled) {
+        document.getElementById("invite-row").style.display = "block";
+        document.getElementById("signup-btn").style.display = "inline-block";
+      }
+    }).catch(() => {});
   </script>
 </body>
 </html>

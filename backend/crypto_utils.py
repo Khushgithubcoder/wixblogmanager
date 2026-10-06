@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------
 # Credential Encryption (AES-256 via Fernet)
-# Every client's Wix credentials (API key or OAuth token) pass through here.
+# Every client's Wix credentials (OAuth tokens) pass through here.
 # The database NEVER sees the raw secret - only this encrypted form.
 # -----------------------------------------------------------------------
 import os
@@ -16,7 +16,7 @@ def _get_fernet():
     return Fernet(key.strip().encode())
 
 def encrypt_key(raw_secret: str) -> str:
-    """Turn a plain Wix API key or OAuth token into an encrypted string safe to store."""
+    """Turn a plain Wix OAuth token into an encrypted string safe to store."""
     if not raw_secret:
         return ""
     return _get_fernet().encrypt(raw_secret.strip().encode()).decode()
@@ -26,3 +26,8 @@ def decrypt_key(encrypted_secret: str) -> str:
     if not encrypted_secret:
         return ""
     return _get_fernet().decrypt(encrypted_secret.encode()).decode()
+
+
+def check_configured() -> None:
+    """Raise at startup if ENCRYPTION_KEY is missing or not a valid Fernet key."""
+    _get_fernet()

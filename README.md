@@ -19,8 +19,7 @@ A secure platform allowing clients to connect their existing Wix website and blo
 └────────────────────────────────┬────────────────────────────────┘
                                  │
                  Authorization Flow (No Passwords)
-                 - Method 1: Site-Scoped API Key
-                 - Method 2: Wix App OAuth 2.0
+                 - Wix App OAuth 2.0 (one-click install)
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -38,7 +37,7 @@ A secure platform allowing clients to connect their existing Wix website and blo
 
 ## Research: What Wix Allows via Authorized 3rd-Party App vs. Wix Editor
 
-Connecting to a Wix site via an authorized app or API key does **not** grant unrestricted access to the visual drag-and-drop Wix Editor. Here are the exact boundaries:
+Connecting to a Wix site via an authorized app does **not** grant unrestricted access to the visual drag-and-drop Wix Editor. Here are the exact boundaries:
 
 ### 1. What IS 100% Manageable via API:
 * **Wix Blog (Full CRUD)**:
@@ -86,24 +85,16 @@ This application uses **PostgreSQL exclusively**.
 
 ## How Clients Connect (Step-by-Step)
 
-### Method 1: Site-Scoped Wix API Key (Direct & Self-Serve)
-1. The client logs into their Wix account.
-2. Navigates to **Account Settings → API Keys Manager**.
-3. Clicks **Generate API Key**:
-   * Scopes: Select **Manage Blog**, **Read Site Properties**, and **Read Members**.
-   * Site Access: Restrict specifically to the single website to be managed.
-4. Copies the key immediately (Wix shows it once).
-5. Enters the **API Key** and **Site ID** in our platform's **Connect Wix** portal.
-6. Our backend verifies the key with Wix, audits permissions, encrypts it with **AES-256 (Fernet)**, and stores the encrypted credential in PostgreSQL.
-7. *Client can revoke the key at any time in their Wix account settings with 1 click.*
+### Wix App OAuth 2.0 (1-Click App Install)
+1. Configure `WIX_APP_ID`, `WIX_APP_SECRET` and `WIX_REDIRECT_URI` (must match the callback registered in the Wix app).
+2. The client clicks **Connect with Wix** on the *Connect Wix* page.
+3. The server stores a random, single-use `state` in the client's session and sends them to Wix's installer.
+4. The client reviews permissions and clicks **Add to Site**.
+5. Wix redirects back with an authorization code **and our `state`**. The callback only proceeds if the state matches the one issued to that logged-in session; the account that receives the site is always the session user.
+6. The backend exchanges the code, encrypts the tokens (Fernet/AES), and stores them. Access tokens last ~5 minutes; they are cached with their expiry and refreshed only when needed (under a row lock, so concurrent requests/workers refresh once).
+7. Choose the **Post author** on the dashboard. Posts are never attributed to an automatically-picked member (exception: a site with exactly one member).
 
-### Method 2: Wix App OAuth 2.0 (1-Click App Install)
-1. We configure our registered Wix App ID and Secret in `backend/.env`.
-2. The client clicks **Connect via Wix OAuth App**.
-3. Client is redirected to Wix's authorization dialog: `wix.com/installer/install?appId=...`.
-4. Client reviews permissions and clicks **Add to Site**.
-5. Wix redirects back with an authorization code.
-6. Backend exchanges code for access and refresh tokens, encrypts them, and binds the site.
+> The old site-scoped API-key method was removed. On startup, any stored API-key connections are deleted and the `encrypted_api_key` column is dropped - those users must reconnect with OAuth.
 
 ---
 
@@ -138,13 +129,29 @@ This repository includes `render.yaml` for a Render Blueprint deployment. From t
   `https://YOUR-RENDER-DOMAIN.onrender.com/api/wix/oauth/callback`
 5. If using Wix OAuth, also register that exact callback URL in the Wix app and set `WIX_APP_ID` and `WIX_APP_SECRET` in Render.
 
-The API-key connection flow works without the optional Wix OAuth variables. Render supplies `DATABASE_URL` automatically from the managed PostgreSQL database.
+Render supplies `DATABASE_URL` automatically from the managed PostgreSQL database.
+
+### Required environment variables (production)
+
+| Variable | Purpose |
+|---|---|
+| `SESSION_SECRET` | Signs login cookies. **The app refuses to start in production without a random value of 32+ chars.** (Render generates it.) |
+| `ENCRYPTION_KEY` | Fernet key used to encrypt Wix tokens at rest. |
+| `SIGNUP_INVITE_CODE` | Sign-ups are **closed** unless this is set; people need the code to register. |
+| `WIX_APP_ID` / `WIX_APP_SECRET` / `WIX_REDIRECT_URI` | Wix OAuth app. |
+| `ENABLE_INAPP_SCHEDULER` | `1` (default) runs the scheduler thread in the web process; set `0` if you use the cron job (`backend/run_scheduler.py`). |
+| `FLASK_DEBUG` | Local only. `1` enables the Werkzeug debugger (remote code execution if exposed). |
+
+### Render free-tier limits to know about
+* Free web services sleep after ~15 minutes without traffic, so the in-app scheduler is not running while asleep. Scheduled posts are published late, when the service next wakes. Use a paid plan, or a Render Cron Job running `python backend/run_scheduler.py` every minute (see `render.yaml`).
+* Free Render Postgres **expires 30 days after creation** (14-day grace period, then deleted) and has no backups.
+* `GET /healthz` is a cheap health check that doesn't touch the database.
 
 ---
 
 ## Features Built
 
-1. **Authentication**: Email/password signup and login with secure session handling.
+1. **Authentication**: Invite-only signup, login with rate limiting, hardened session cookies.
 2. **Site Connection**: Live validation against `wixapis.com/site-properties/v4/properties` with permission audits.
 3. **Wix Blog Manager (`wix-posts.html`)**:
    * View live published posts and drafts directly from the client's Wix site
@@ -152,16 +159,9 @@ The API-key connection flow works without the optional Wix OAuth variables. Rend
    * Publish Wix drafts to live with 1 click
    * Delete posts from Wix
 4. **Post Authoring & Scheduling (`create-blog.html`)**:
-   * Create drafts or publish live
+   * Create drafts or publish live; the body supports headings, lists, quotes, bold/italic and links (Markdown-lite)
+   * Edit published posts (via draft `UPDATE_PUBLICATION` + publish)
    * Automatic image upload to Wix Media Manager
    * Background automated scheduler for future publication
-5. **Batch Import (`import-sheets.html`)**: Import multiple articles from published Google Sheets CSV.
+5. **Batch Import (`import-sheets.html`)**: Import up to 200 articles from a published Google Sheets CSV (only `docs.google.com` links; internal addresses are blocked).
 6. **Activity Log & Audit Trail (`history.html`)**: Complete log of all management actions performed on Wix.
-
-
-**SAMPLE API KEY** IST.eyJraWQiOiJQb3pIX2FDMiIsImFsZyI6IlJTMjU2In0.eyJkYXRhIjoie1wiaWRcIjpcImI1NDY4OGQ3LTRmMjItNGRkOC1hNjM3LTI0YjliNDZlZDk1MlwiLFwiaWRlbnRpdHlcIjp7XCJ0eXBlXCI6XCJhcHBsaWNhdGlvblwiLFwiaWRcIjpcIjhhMjJkZWMwLTQ0MjctNGVhYS05ODQ1LWZlMjljNDkwMjE5YVwifSxcInRlbmFudFwiOntcInR5cGVcIjpcImFjY291bnRcIixcImlkXCI6XCJlMzkzMjhiOC0yYWM2LTQyNGYtOTA5Zi1jNmZiNzZjZjAxNjZcIn19IiwiaWF0IjoxNzkwMjc0NjgzfQ.RflM4RPPDdkOMHlHpkfOhPmIErPFLJKNPYI88XmDzfa3IizDIx-pnO2tHmBsm3-gbUaApKa_4iZPOjWiCxSzeF7rmynBf-msD0cGj9CnkuzAnCE0UHi-mjYfQEUuh2a-CfB76E7KcjJ786fM-VazMfW3eT92hhksR_PAnFUedQvvVdXXB31ph0Sq_BCZEdlPI_aIhzPBiUXSwRPClIGlCJvA3TQ2U1iBUXAKu7URG-GJtyRqfOLfPl6LbjjX0VhTrROykTtTe9J1D5TgJQmG2wZvZyIQuiWOgSyE4dyguHchOV5MmPhKdEgdwa-sb7H-mVtkbcHYxhZU0VLhogb_wA
-
-
-**SAMPLE WIX ID**
-
-a29f279e-7b85-45c2-8a14-a3a0183e4fcc

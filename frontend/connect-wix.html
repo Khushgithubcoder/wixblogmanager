@@ -18,18 +18,11 @@
 
   <p class="eyebrow">Zero-Credential Integration</p>
   <h1>Connect Your Wix Website</h1>
-  <p class="lede">Connect your Wix account securely without ever sharing your Wix email or password. Access can be revoked from your Wix account at any time with one click.</p>
+  <p class="lede">Connect your Wix site by installing our app on it. We never see your Wix email or password, and you can revoke access from your Wix dashboard at any time.</p>
 
-  <!-- Connection Form Card -->
   <div class="card">
-    <label for="apiKey">Wix API Key</label>
-    <input id="apiKey" type="password" placeholder="wix_api_..." autocomplete="off" />
-
-    <label for="siteId">Wix Site ID</label>
-    <input id="siteId" placeholder="e.g. 5a1b2c3d-4e5f-6789-0123-abcdef456789" />
-
-    <button id="connect-btn" onclick="connectApiKey()">Verify & Connect Website</button>
-
+    <p>You'll be sent to Wix to review the permissions (Blog, Site Media, Members) and choose the site to connect. Then you'll land back here.</p>
+    <button id="connect-btn" onclick="connectWithWix()">Connect with Wix</button>
     <div id="result" style="margin-top:16px;"></div>
   </div>
 
@@ -39,48 +32,25 @@
       if (!res.ok) window.location.href = "login.html";
     }
 
-    async function connectApiKey() {
-      const apiKey = document.getElementById("apiKey").value.trim();
-      const siteId = document.getElementById("siteId").value.trim();
+    async function connectWithWix() {
       const btn = document.getElementById("connect-btn");
       const result = document.getElementById("result");
-
-      if (!apiKey || !siteId) {
-        result.innerHTML = `<span class="text-error">Please fill in both the API Key and Site ID.</span>`;
-        return;
-      }
-
       btn.disabled = true;
-      btn.textContent = "Verifying with Wix API...";
-      result.innerHTML = `<span class="hint">Testing site connection and verifying permissions...</span>`;
-
+      result.innerHTML = `<span class="hint">Preparing a secure connection...</span>`;
       try {
-        const res = await fetch("/api/wix/connect", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ apiKey, siteId }),
-        });
+        const res = await fetch("/api/wix/oauth/start");
         const data = await res.json();
-
-        if (res.ok) {
-          result.innerHTML = `
-            <div style="background:#dff4eb; padding:16px; border-radius:8px; border:1px solid #bce6d5;">
-              <strong class="text-success">✅ Successfully Connected & Verified!</strong>
-              <p style="margin:8px 0 0; font-size:14px;">Connected to: <strong>${data.siteInfo.siteDisplayName}</strong> (${data.siteInfo.url || 'URL pending'})</p>
-              <p class="hint" style="margin:4px 0 0;">Redirecting to dashboard...</p>
-            </div>
-          `;
-          setTimeout(() => (window.location.href = "dashboard.html"), 1200);
-        } else {
-          btn.disabled = false;
-          btn.textContent = "Verify & Connect Website";
-          result.innerHTML = `<div class="text-error" style="background:#fff0eb; padding:14px; border-radius:6px; border:1px solid #f9d3ca;">❌ ${data.error}</div>`;
-        }
+        if (!res.ok) throw new Error(data.error || "Could not start the connection.");
+        window.location.href = data.installerUrl;
       } catch (err) {
         btn.disabled = false;
-        btn.textContent = "Verify & Connect Website";
-        result.innerHTML = `<div class="text-error">Network error: ${err.message}</div>`;
+        result.innerHTML = `<div class="text-error">${escapeHtml(err.message)}</div>`;
       }
+    }
+
+    if (new URLSearchParams(window.location.search).get("error") === "site_taken") {
+      document.getElementById("result").innerHTML =
+        `<div class="text-error">That Wix site is already connected to another account here.</div>`;
     }
 
     checkAuth();

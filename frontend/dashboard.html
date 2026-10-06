@@ -29,6 +29,17 @@
     <div id="conn-details">Loading connection information...</div>
   </div>
 
+  <!-- Post author -->
+  <div class="card" id="author-card" style="display:none;">
+    <div class="card-header"><h2 style="margin:0;">Post author</h2></div>
+    <p class="hint" style="margin-top:0;">New posts are published as this site member. We never pick one automatically when the site has several members.</p>
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <select id="author-select" style="max-width:320px; margin-bottom:0;"></select>
+      <button class="btn btn-secondary btn-sm" onclick="saveAuthor()">Save author</button>
+      <span id="author-msg" class="hint"></span>
+    </div>
+  </div>
+
   <!-- Quick Stats -->
   <div class="stats-grid" id="stats-area" style="display:none;">
     <div class="stat-card">
@@ -68,7 +79,7 @@
           badge.textContent = "NOT CONNECTED";
           details.innerHTML = `
             <p>No Wix website is currently connected to this account.</p>
-            <p class="hint">Clients can securely link their site via a site-scoped API key or 1-click Wix App installation.</p>
+            <p class="hint">Link your site securely with one-click Wix app installation. No passwords are shared.</p>
             <a href="connect-wix.html" class="btn">Connect Wix Website Now</a>
           `;
           statsArea.style.display = "none";
@@ -80,10 +91,10 @@
 
         details.innerHTML = `
           <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:16px; margin: 12px 0 16px;">
-            <div><strong>Site Name:</strong> ${data.siteName || 'Wix Site'}</div>
-            <div><strong>Site ID:</strong> <code>${data.siteId}</code></div>
-            <div><strong>Auth Type:</strong> ${data.authType.toUpperCase()}</div>
-            <div><strong>Live Website:</strong> ${data.siteUrl ? `<a href="${data.siteUrl}" target="_blank">${data.siteUrl} ↗</a>` : 'URL unavailable'}</div>
+            <div><strong>Site Name:</strong> ${escapeHtml(data.siteName || 'Wix Site')}</div>
+            <div><strong>Site ID:</strong> <code>${escapeHtml(data.siteId)}</code></div>
+            <div><strong>Connection:</strong> Wix app (OAuth)</div>
+            <div><strong>Live Website:</strong> ${/^https?:\/\//.test(data.siteUrl) ? `<a href="${escapeHtml(data.siteUrl)}" target="_blank" rel="noopener">${escapeHtml(data.siteUrl)} ↗</a>` : 'URL unavailable'}</div>
           </div>
           <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
             <a href="wix-posts.html" class="btn">Manage Blog Posts ↗</a>
@@ -94,11 +105,40 @@
 
         statsArea.style.display = "grid";
 
-        // Fetch counts
         loadCounts();
+        loadAuthors(data.authorMemberId);
       } catch (err) {
         document.getElementById("conn-details").innerHTML = `<span class="text-error">Error connecting to backend database: ${err.message}</span>`;
       }
+    }
+
+    async function loadAuthors(currentId) {
+      const card = document.getElementById("author-card");
+      const select = document.getElementById("author-select");
+      const msg = document.getElementById("author-msg");
+      try {
+        const res = await fetch("/api/wix/members");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Could not load members.");
+        card.style.display = "block";
+        select.innerHTML = (currentId ? "" : `<option value="">— choose an author —</option>`) +
+          data.members.map((m) => `<option value="${escapeHtml(m.id)}" ${m.id === currentId ? "selected" : ""}>${escapeHtml(m.name)}</option>`).join("");
+        if (!currentId) msg.textContent = data.members.length === 1 ? "Only one member exists, so it will be used automatically." : "Required before publishing.";
+      } catch (e) {
+        card.style.display = "block";
+        msg.textContent = e.message;
+      }
+    }
+
+    async function saveAuthor() {
+      const memberId = document.getElementById("author-select").value;
+      const msg = document.getElementById("author-msg");
+      if (!memberId) { msg.textContent = "Pick a member first."; return; }
+      const res = await fetch("/api/wix/author", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ memberId }),
+      });
+      const data = await res.json();
+      msg.textContent = res.ok ? "Saved." : (data.error || "Could not save.");
     }
 
     async function loadCounts() {

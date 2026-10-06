@@ -1,80 +1,75 @@
 # -----------------------------------------------------------------------
-# Wix API Service Layer
-# Supports both:
-# 1) Client Scoped API Key (Site-level Authorization)
-# 2) Wix App OAuth 2.0 (Access Token + Refresh Token Flow)
+# Wix API Service Layer (Wix App OAuth 2.0 only)
+#
+# Every call here takes an OAuth *access token*. App access tokens already
+# identify the app instance (= the client's site), so no site-id header is
+# sent. Wix expects the raw token in `Authorization` (no "Bearer" prefix).
 # -----------------------------------------------------------------------
+import re
+import uuid
 import requests
-import json
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple, Set
 
 WIX_API_BASE = "https://www.wixapis.com"
 
-def _headers(auth_token: str, site_id: str, auth_type: str = "api_key") -> Dict[str, str]:
-    """Generate headers for Wix REST API requests based on authorization type.
 
-    Wix REST expects the raw token in the Authorization header (no "Bearer" prefix).
-    - api_key: account/site API keys need the wix-site-id header to pick the site.
-    - oauth:   app access tokens already carry the app instance, so wix-site-id must NOT be sent
-               (the value we store for OAuth is the app instanceId, which is not a site ID).
-    """
-    headers = {
-        "Authorization": auth_token.strip(),
-        "Content-Type": "application/json",
-    }
-    if auth_type != "oauth" and site_id:
-        headers["wix-site-id"] = site_id.strip()
-    return headers
+class WixApiError(RuntimeError):
+    """A non-2xx response from Wix."""
+
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class AuthorRequired(Exception):
+    """No (unambiguous) blog author has been chosen for this site."""
+
+
+def _headers(access_token: str) -> Dict[str, str]:
+    return {"Authorization": access_token.strip(), "Content-Type": "application/json"}
+
 
 # --- OAuth 2.0 Token Management ---------------------------------------------
 
 def exchange_oauth_code(app_id: str, app_secret: str, code: str) -> Dict[str, Any]:
-    """Exchange authorization code from Wix redirect for access and refresh tokens."""
-    url = f"{WIX_API_BASE}/oauth/access"
-    payload = {
-        "grant_type": "authorization_code",
-        "client_id": app_id,
-        "client_secret": app_secret,
-        "code": code,
-    }
-    resp = requests.post(url, json=payload, timeout=15)
+    """Exchange the authorization code from the Wix redirect for access + refresh tokens."""
+    resp = requests.post(
+        f"{WIX_API_BASE}/oauth/access",
+        json={"grant_type": "authorization_code", "client_id": app_id, "client_secret": app_secret, "code": code},
+        timeout=15,
+    )
     if not resp.ok:
-        raise RuntimeError(f"Failed to exchange Wix OAuth code: {resp.text}")
+        raise WixApiError(f"Failed to exchange Wix OAuth code: {resp.text}", resp.status_code)
     return resp.json()
 
+
 def refresh_oauth_token(app_id: str, app_secret: str, refresh_token: str) -> Dict[str, Any]:
-    """Refresh an expired OAuth access token using long-lived refresh token."""
-    url = f"{WIX_API_BASE}/oauth/access"
-    payload = {
-        "grant_type": "refresh_token",
-        "client_id": app_id,
-        "client_secret": app_secret,
-        "refresh_token": refresh_token,
-    }
-    resp = requests.post(url, json=payload, timeout=15)
+    """Mint a new (5 minute) access token from the long-lived refresh token."""
+    resp = requests.post(
+        f"{WIX_API_BASE}/oauth/access",
+        json={"grant_type": "refresh_token", "client_id": app_id, "client_secret": app_secret, "refresh_token": refresh_token},
+        timeout=15,
+    )
     if not resp.ok:
-        raise RuntimeError(f"Failed to refresh Wix OAuth token: {resp.text}")
+        raise WixApiError(f"Failed to refresh Wix OAuth token: {resp.text}", resp.status_code)
     return resp.json()
+
 
 # --- Site Verification & Properties -----------------------------------------
 
-def verify_and_inspect_site(auth_token: str, site_id: str, auth_type: str = "api_key") -> Dict[str, Any]:
-    """
-    Validates credentials by fetching site properties.
-    Returns site metadata including name, URL, and publishing state.
-    """
-    url = f"{WIX_API_BASE}/site-properties/v4/properties"
+def verify_and_inspect_site(access_token: str) -> Dict[str, Any]:
+    """Validate the token by fetching site properties; returns site metadata."""
     try:
-        resp = requests.get(url, headers=_headers(auth_token, site_id, auth_type), timeout=12)
+        resp = requests.get(f"{WIX_API_BASE}/site-properties/v4/properties", headers=_headers(access_token), timeout=12)
     except requests.RequestException as e:
         raise ConnectionError(f"Network error connecting to Wix API: {e}")
 
     if resp.status_code == 401:
-        raise ValueError("Wix rejected this credential (401 Unauthorized). Verify your API key or OAuth token.")
+        raise ValueError("Wix rejected this credential (401 Unauthorized). Reconnect your Wix site.")
     if resp.status_code == 403:
-        raise ValueError("Permission denied (403 Forbidden). Ensure the credential has 'Site Properties' and 'Blog' permissions.")
+        raise ValueError("Permission denied (403 Forbidden). Make sure the app has 'Site Properties' and 'Blog' permissions.")
     if resp.status_code == 404:
-        raise ValueError("Site ID not found (404 Not Found). Double-check the Wix Site ID.")
+        raise ValueError("Site not found (404 Not Found).")
 
     resp.raise_for_status()
     data = resp.json().get("properties", {})
@@ -87,108 +82,280 @@ def verify_and_inspect_site(auth_token: str, site_id: str, auth_type: str = "api
         "siteDisplayName": data.get("siteDisplayName") or data.get("title") or "Wix Site",
     }
 
-def check_permissions(auth_token: str, site_id: str, auth_type: str = "api_key") -> Dict[str, bool]:
+
+def check_permissions(access_token: str) -> Dict[str, bool]:
     """Audit which scopes are successfully authorized on the connected site."""
-    headers = _headers(auth_token, site_id, auth_type)
-    perms = {
-        "site_properties": False,
-        "blog_management": False,
-        "members_read": False,
-        "site_media": False,
+    headers = _headers(access_token)
+    checks = {
+        "site_properties": ("/site-properties/v4/properties", (200,)),
+        "blog_management": ("/blog/v3/posts?paging.limit=1", (200,)),
+        "members_read": ("/members/v1/members?paging.limit=1", (200,)),
+        "site_media": ("/site-media/v1/files?paging.limit=1", (200, 404)),
     }
-
-    # 1. Test Site Properties
-    try:
-        r = requests.get(f"{WIX_API_BASE}/site-properties/v4/properties", headers=headers, timeout=8)
-        perms["site_properties"] = r.status_code == 200
-    except Exception:
-        pass
-
-    # 2. Test Blog API
-    try:
-        r = requests.get(f"{WIX_API_BASE}/blog/v3/posts?paging.limit=1", headers=headers, timeout=8)
-        if r.status_code != 200:
-            r = requests.get(f"{WIX_API_BASE}/v3/posts?paging.limit=1", headers=headers, timeout=8)
-        perms["blog_management"] = r.status_code == 200
-    except Exception:
-        pass
-
-    # 3. Test Members API
-    try:
-        r = requests.get(f"{WIX_API_BASE}/members/v1/members?paging.limit=1", headers=headers, timeout=8)
-        perms["members_read"] = r.status_code == 200
-    except Exception:
-        pass
-
-    # 4. Test Media API
-    try:
-        r = requests.get(f"{WIX_API_BASE}/site-media/v1/files?paging.limit=1", headers=headers, timeout=8)
-        perms["site_media"] = r.status_code in [200, 404]
-    except Exception:
-        pass
-
+    perms = {}
+    for name, (path, ok_codes) in checks.items():
+        try:
+            r = requests.get(f"{WIX_API_BASE}{path}", headers=headers, timeout=8)
+            perms[name] = r.status_code in ok_codes
+        except Exception:
+            perms[name] = False
     return perms
 
-# --- Member & Media Helpers -------------------------------------------------
 
-def get_site_member_id(auth_token: str, site_id: str, auth_type: str = "api_key") -> Optional[str]:
-    """Finds an existing site member to assign as blog post author."""
-    try:
-        resp = requests.get(
-            f"{WIX_API_BASE}/members/v1/members",
-            headers=_headers(auth_token, site_id, auth_type),
-            params={"fieldsets": "PUBLIC", "paging.limit": 1},
-            timeout=10,
+# --- Members (blog authors) -------------------------------------------------
+
+def list_members(access_token: str, limit: int = 100) -> List[Dict[str, Any]]:
+    """List site members that can be chosen as the author of blog posts."""
+    resp = requests.get(
+        f"{WIX_API_BASE}/members/v1/members",
+        headers=_headers(access_token),
+        params={"fieldsets": "PUBLIC", "paging.limit": limit},
+        timeout=12,
+    )
+    if not resp.ok:
+        raise WixApiError(f"Could not list site members: {resp.status_code} {resp.text}", resp.status_code)
+    out = []
+    for m in resp.json().get("members", []):
+        profile = m.get("profile") or {}
+        contact = m.get("contact") or {}
+        name = (
+            profile.get("nickname")
+            or " ".join(filter(None, [contact.get("firstName"), contact.get("lastName")]))
+            or m.get("loginEmail")
+            or m.get("id")
         )
-        if resp.ok:
-            members = resp.json().get("members", [])
-            if members:
-                return members[0]["id"]
-    except Exception:
-        pass
-    return None
+        out.append({"id": m["id"], "name": name})
+    return out
 
-def import_image(auth_token: str, site_id: str, image_url: str, auth_type: str = "api_key") -> str:
-    """Imports an external image URL into Wix Site Media Manager and returns Wix Media ID."""
+
+def resolve_author_member_id(access_token: str, chosen_member_id: Optional[str]) -> str:
+    """
+    Posts must be attributed to a deliberately chosen member. We never guess:
+    - an explicit choice wins;
+    - otherwise it is only automatic when the site has exactly one member.
+    """
+    if chosen_member_id:
+        return chosen_member_id
+    members = list_members(access_token, limit=2)
+    if len(members) == 1:
+        return members[0]["id"]
+    raise AuthorRequired("Choose which site member new posts are published as (Dashboard → Post author) before publishing.")
+
+
+def import_image(access_token: str, image_url: str) -> str:
+    """Import an external image URL into the Wix Media Manager and return the Wix media ID."""
     resp = requests.post(
         f"{WIX_API_BASE}/site-media/v1/files/import",
-        headers=_headers(auth_token, site_id, auth_type),
+        headers=_headers(access_token),
         json={"url": image_url, "mediaType": "IMAGE", "displayName": "Blog cover image"},
         timeout=15,
     )
     if not resp.ok:
-        raise RuntimeError(f"Wix Media Import failed: {resp.text}")
+        raise WixApiError(f"Wix Media Import failed: {resp.text}", resp.status_code)
     return resp.json()["file"]["id"]
+
+
+# --- Rich content (Ricos) <-> light Markdown ---------------------------------
+# The article box accepts a small Markdown subset, so formatting survives:
+#   blank/new line = new paragraph, "# " .. "###### " headings, "- " / "* " bullets,
+#   "1. " numbered lists, "> " quotes, ``` code fences, "---" divider,
+#   **bold**, *italic*, [text](https://link)
+
+_INLINE_RE = re.compile(
+    r"\*\*(?P<bold>.+?)\*\*"
+    r"|\*(?!\s)(?P<ital>.+?)(?<!\s)\*"
+    r"|\[(?P<ltext>[^\]]+)\]\((?P<url>https?://[^\s)]+)\)"
+)
+
+
+def _nid() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def _text_node(text: str, decorations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return {"type": "TEXT", "id": _nid(), "nodes": [], "textData": {"text": text, "decorations": list(decorations)}}
+
+
+def _inline_nodes(text: str, decorations: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    decorations = decorations or []
+    nodes: List[Dict[str, Any]] = []
+    pos = 0
+    for m in _INLINE_RE.finditer(text):
+        if m.start() > pos:
+            nodes.append(_text_node(text[pos:m.start()], decorations))
+        if m.group("bold") is not None:
+            nodes += _inline_nodes(m.group("bold"), decorations + [{"type": "BOLD", "fontWeightValue": 700}])
+        elif m.group("ital") is not None:
+            nodes += _inline_nodes(m.group("ital"), decorations + [{"type": "ITALIC", "italicData": True}])
+        else:
+            link = {"type": "LINK", "linkData": {"link": {"url": m.group("url"), "target": "BLANK"}}}
+            nodes += _inline_nodes(m.group("ltext"), decorations + [link])
+        pos = m.end()
+    if pos < len(text):
+        nodes.append(_text_node(text[pos:], decorations))
+    return nodes
+
+
+def _paragraph(text: str) -> Dict[str, Any]:
+    return {"type": "PARAGRAPH", "id": _nid(), "nodes": _inline_nodes(text), "paragraphData": {}}
+
+
+def text_to_ricos_nodes(content: str) -> List[Dict[str, Any]]:
+    """Convert the editor's plain/Markdown-lite text into Ricos nodes."""
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    nodes: List[Dict[str, Any]] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip()
+        stripped = line.strip()
+        if not stripped:
+            i += 1
+            continue
+
+        if stripped.startswith("```"):  # fenced code block
+            i += 1
+            code: List[str] = []
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                code.append(lines[i])
+                i += 1
+            i += 1  # closing fence
+            nodes.append({
+                "type": "CODE_BLOCK", "id": _nid(),
+                "nodes": [_text_node("\n".join(code), [])], "codeBlockData": {},
+            })
+            continue
+
+        heading = re.match(r"^(#{1,6})\s+(.*\S)\s*$", stripped)
+        if heading:
+            nodes.append({
+                "type": "HEADING", "id": _nid(),
+                "nodes": _inline_nodes(heading.group(2)),
+                "headingData": {"level": len(heading.group(1))},
+            })
+            i += 1
+            continue
+
+        if re.fullmatch(r"(-{3,}|\*{3,}|_{3,})", stripped):
+            nodes.append({"type": "DIVIDER", "id": _nid(), "nodes": [], "dividerData": {}})
+            i += 1
+            continue
+
+        if stripped.startswith(">"):
+            quoted: List[Dict[str, Any]] = []
+            while i < len(lines) and lines[i].strip().startswith(">"):
+                q = lines[i].strip()[1:].strip()
+                if q:
+                    quoted.append(_paragraph(q))
+                i += 1
+            nodes.append({"type": "BLOCKQUOTE", "id": _nid(), "nodes": quoted or [_paragraph("")], "blockquoteData": {}})
+            continue
+
+        bullet = re.match(r"^[-*+]\s+(.*\S)\s*$", stripped)
+        numbered = re.match(r"^\d+[.)]\s+(.*\S)\s*$", stripped)
+        if bullet or numbered:
+            ordered = bool(numbered)
+            pattern = r"^\d+[.)]\s+(.*\S)\s*$" if ordered else r"^[-*+]\s+(.*\S)\s*$"
+            items = []
+            while i < len(lines):
+                mm = re.match(pattern, lines[i].strip())
+                if not mm:
+                    break
+                items.append({"type": "LIST_ITEM", "id": _nid(), "nodes": [_paragraph(mm.group(1))], "listItemData": {}})
+                i += 1
+            nodes.append({
+                "type": "ORDERED_LIST" if ordered else "BULLETED_LIST", "id": _nid(), "nodes": items,
+                "orderedListData" if ordered else "bulletedListData": {},
+            })
+            continue
+
+        nodes.append(_paragraph(stripped))
+        i += 1
+
+    return nodes or [_paragraph(content.strip() or " ")]
+
+
+_SUPPORTED_NODES = {"PARAGRAPH", "TEXT", "HEADING", "BULLETED_LIST", "ORDERED_LIST", "LIST_ITEM", "BLOCKQUOTE", "CODE_BLOCK", "DIVIDER"}
+_SUPPORTED_DECOS = {"BOLD", "ITALIC", "LINK"}
+
+
+def ricos_to_text(rich_content: Optional[Dict[str, Any]]) -> Tuple[str, Set[str]]:
+    """
+    Turn Ricos back into the editor's Markdown-lite text.
+    Returns (text, unsupported) where `unsupported` names anything the editor can't
+    represent (images, embeds, colours...). Saving edited text replaces the body, so
+    the UI warns when this set is non-empty.
+    """
+    unsupported: Set[str] = set()
+
+    def inline(node: Dict[str, Any]) -> str:
+        if node.get("type") != "TEXT":
+            if node.get("type") not in _SUPPORTED_NODES:
+                unsupported.add(node.get("type", "UNKNOWN"))
+            return "".join(inline(c) for c in node.get("nodes", []))
+        text = (node.get("textData") or {}).get("text", "")
+        for deco in (node.get("textData") or {}).get("decorations", []):
+            t = deco.get("type")
+            if t == "BOLD":
+                text = f"**{text}**"
+            elif t == "ITALIC":
+                text = f"*{text}*"
+            elif t == "LINK":
+                url = (((deco.get("linkData") or {}).get("link")) or {}).get("url")
+                text = f"[{text}]({url})" if url else text
+            elif t not in _SUPPORTED_DECOS:
+                unsupported.add(f"text:{t}")
+        return text
+
+    def block(node: Dict[str, Any]) -> List[str]:
+        t = node.get("type")
+        kids = node.get("nodes", [])
+        if t == "PARAGRAPH":
+            return ["".join(inline(c) for c in kids)]
+        if t == "HEADING":
+            level = (node.get("headingData") or {}).get("level", 2)
+            return ["#" * max(1, min(6, level)) + " " + "".join(inline(c) for c in kids)]
+        if t in ("BULLETED_LIST", "ORDERED_LIST"):
+            out = []
+            for n, item in enumerate(kids, 1):
+                text = " ".join(x for child in item.get("nodes", []) for x in block(child))
+                out.append(f"{n}. {text}" if t == "ORDERED_LIST" else f"- {text}")
+            return out
+        if t == "BLOCKQUOTE":
+            return ["> " + x for child in kids for x in block(child)]
+        if t == "CODE_BLOCK":
+            return ["```", "".join(inline(c) for c in kids), "```"]
+        if t == "DIVIDER":
+            return ["---"]
+        unsupported.add(t or "UNKNOWN")
+        return []
+
+    lines: List[str] = []
+    for n in (rich_content or {}).get("nodes", []):
+        lines += block(n)
+    return "\n".join(lines), unsupported
+
 
 # --- Blog Post Management (CRUD) -------------------------------------------
 
-def list_posts(auth_token: str, site_id: str, limit: int = 50, offset: int = 0, auth_type: str = "api_key") -> List[Dict[str, Any]]:
-    """Retrieve published blog posts from the client's Wix website."""
-    headers = _headers(auth_token, site_id, auth_type)
-    url = f"{WIX_API_BASE}/blog/v3/posts"
-    params = {"paging.limit": limit, "paging.offset": offset}
-    
-    resp = requests.get(url, headers=headers, params=params, timeout=12)
-    if resp.status_code == 404:
-        # Fallback to alternate endpoint path supported by some Wix versions
-        url = f"{WIX_API_BASE}/v3/posts"
-        resp = requests.get(url, headers=headers, params=params, timeout=12)
-    
+def _check(resp: requests.Response, what: str) -> None:
     if not resp.ok:
-        raise RuntimeError(f"Failed to fetch posts from Wix: {resp.status_code} {resp.text}")
-    
-    data = resp.json()
-    raw_posts = data.get("posts", [])
-    
+        raise WixApiError(f"{what}: {resp.status_code} {resp.text}", resp.status_code)
+
+
+def list_posts(access_token: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    resp = requests.get(
+        f"{WIX_API_BASE}/blog/v3/posts", headers=_headers(access_token),
+        params={"paging.limit": limit, "paging.offset": offset}, timeout=12,
+    )
+    _check(resp, "Failed to fetch posts from Wix")
+
     formatted = []
-    for p in raw_posts:
-        # Extract cover image if present
+    for p in resp.json().get("posts", []):
         cover_image = None
-        media = p.get("media", {})
-        if media and "wixMedia" in media:
+        media = p.get("media") or {}
+        if "wixMedia" in media:
             img = media["wixMedia"].get("image", {})
             cover_image = img.get("url") or img.get("id")
-        
         formatted.append({
             "id": p.get("id"),
             "title": p.get("title", "Untitled"),
@@ -202,106 +369,74 @@ def list_posts(auth_token: str, site_id: str, limit: int = 50, offset: int = 0, 
         })
     return formatted
 
-def list_draft_posts(auth_token: str, site_id: str, limit: int = 50, offset: int = 0, auth_type: str = "api_key") -> List[Dict[str, Any]]:
-    """Retrieve draft blog posts from the client's Wix website."""
-    headers = _headers(auth_token, site_id, auth_type)
-    url = f"{WIX_API_BASE}/blog/v3/draft-posts"
-    params = {"paging.limit": limit, "paging.offset": offset}
-    
-    resp = requests.get(url, headers=headers, params=params, timeout=12)
+
+def list_draft_posts(access_token: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    resp = requests.get(
+        f"{WIX_API_BASE}/blog/v3/draft-posts", headers=_headers(access_token),
+        params={"paging.limit": limit, "paging.offset": offset}, timeout=12,
+    )
     if not resp.ok:
         return []
-    
-    raw_drafts = resp.json().get("draftPosts", [])
-    formatted = []
-    for d in raw_drafts:
-        formatted.append({
+    return [
+        {
             "id": d.get("id"),
             "title": d.get("title", "Untitled Draft"),
             "excerpt": d.get("excerpt", ""),
             "status": "draft",
             "lastModified": d.get("lastModified"),
             "memberId": d.get("memberId"),
-        })
-    return formatted
+        }
+        for d in resp.json().get("draftPosts", [])
+    ]
 
-def get_post(auth_token: str, site_id: str, post_id: str, auth_type: str = "api_key") -> Dict[str, Any]:
-    """Retrieve a single published blog post by ID."""
-    headers = _headers(auth_token, site_id, auth_type)
-    url = f"{WIX_API_BASE}/blog/v3/posts/{post_id}"
-    resp = requests.get(url, headers=headers, timeout=12)
-    if resp.status_code == 404:
-        url = f"{WIX_API_BASE}/v3/posts/{post_id}"
-        resp = requests.get(url, headers=headers, timeout=12)
-    resp.raise_for_status()
+
+def get_post(access_token: str, post_id: str) -> Dict[str, Any]:
+    """Fetch a published post *including* its rich content (not returned by default)."""
+    resp = requests.get(
+        f"{WIX_API_BASE}/blog/v3/posts/{post_id}", headers=_headers(access_token),
+        params={"fieldsets": ["RICH_CONTENT"]}, timeout=12,
+    )
+    _check(resp, "Failed to load post")
     return resp.json().get("post", {})
 
-def get_draft_post(auth_token: str, site_id: str, draft_post_id: str, auth_type: str = "api_key") -> Dict[str, Any]:
-    """Retrieve a single Wix draft post by ID."""
+
+def get_draft_post(access_token: str, draft_post_id: str) -> Dict[str, Any]:
     resp = requests.get(
-        f"{WIX_API_BASE}/blog/v3/draft-posts/{draft_post_id}",
-        headers=_headers(auth_token, site_id, auth_type),
-        timeout=12,
+        f"{WIX_API_BASE}/blog/v3/draft-posts/{draft_post_id}", headers=_headers(access_token),
+        params={"fieldsets": ["RICH_CONTENT"]}, timeout=12,
     )
-    resp.raise_for_status()
+    _check(resp, "Failed to load draft")
     return resp.json().get("draftPost", {})
 
+
 def create_draft_post(
-    auth_token: str,
-    site_id: str,
+    access_token: str,
     title: str,
     content: str,
+    member_id: str,
     image_url: Optional[str] = None,
     category_ids: Optional[List[str]] = None,
     tag_ids: Optional[List[str]] = None,
-    auth_type: str = "api_key",
 ) -> str:
-    """Create a draft blog post on Wix. Returns the draft post ID."""
-    headers = _headers(auth_token, site_id, auth_type)
-    member_id = get_site_member_id(auth_token, site_id, auth_type)
-
-    # Build richContent (Ricos format supported by Wix Blog API)
-    content_nodes = [
-        {
-            "type": "PARAGRAPH",
-            "id": "p1",
-            "nodes": [
-                {
-                    "type": "TEXT",
-                    "id": "",
-                    "nodes": [],
-                    "textData": {"text": content, "decorations": []},
-                }
-            ],
-            "paragraphData": {},
-        }
-    ]
+    """Create a draft blog post on Wix. `member_id` is the explicit author. Returns the draft ID."""
+    content_nodes = text_to_ricos_nodes(content)
 
     media_id = None
     if image_url:
         try:
-            media_id = import_image(auth_token, site_id, image_url, auth_type)
-            content_nodes.append(
-                {
-                    "type": "IMAGE",
-                    "id": "img1",
-                    "nodes": [],
-                    "imageData": {
-                        "containerData": {"width": {"size": "CONTENT"}, "alignment": "CENTER"},
-                        "image": {"src": {"id": media_id}, "width": 900, "height": 600},
-                        "altText": title,
-                    },
-                }
-            )
+            media_id = import_image(access_token, image_url)
+            content_nodes.append({
+                "type": "IMAGE", "id": _nid(), "nodes": [],
+                "imageData": {
+                    "containerData": {"width": {"size": "CONTENT"}, "alignment": "CENTER"},
+                    "image": {"src": {"id": media_id}, "width": 900, "height": 600},
+                    "altText": title,
+                },
+            })
         except Exception as e:
             print(f"[Wix Media] Image import skipped or failed: {e}")
 
-    draft_post: Dict[str, Any] = {
-        "title": title,
-        "richContent": {"nodes": content_nodes},
-    }
-    if member_id:
-        draft_post["memberId"] = member_id
+    draft_post: Dict[str, Any] = {"title": title, "memberId": member_id, "richContent": {"nodes": content_nodes}}
     if media_id:
         draft_post["media"] = {"wixMedia": {"image": {"id": media_id}}, "displayed": True, "custom": True}
     if category_ids:
@@ -309,142 +444,72 @@ def create_draft_post(
     if tag_ids:
         draft_post["tagIds"] = tag_ids
 
-    create_resp = requests.post(
-        f"{WIX_API_BASE}/blog/v3/draft-posts",
-        headers=headers,
-        json={"draftPost": draft_post},
-        timeout=15,
-    )
-    if not create_resp.ok:
-        if create_resp.status_code == 401 and "instanceId" in create_resp.text:
-            raise RuntimeError(
-                "Wix could not find a Blog app for this connection. Make sure Wix Blog is installed on the "
-                "client's site, and that the API key / Wix app has Blog + Site Media permissions "
-                "(re-install the app or regenerate the key if you added them recently). "
-                f"Raw response: {create_resp.text}"
-            )
-        raise RuntimeError(f"Wix rejected the draft post: {create_resp.status_code} {create_resp.text}")
-
-    return create_resp.json()["draftPost"]["id"]
-
-def publish_draft_post(auth_token: str, site_id: str, draft_post_id: str, auth_type: str = "api_key") -> str:
-    """Publish an existing Wix draft post to live. Returns published post ID."""
-    headers = _headers(auth_token, site_id, auth_type)
-    publish_resp = requests.post(
-        f"{WIX_API_BASE}/blog/v3/draft-posts/{draft_post_id}/publish",
-        headers=headers,
-        json={},
-        timeout=15,
-    )
-    if not publish_resp.ok:
-        raise RuntimeError(f"Wix rejected publishing the draft post: {publish_resp.status_code} {publish_resp.text}")
-    return publish_resp.json().get("postId") or draft_post_id
-
-def publish_blog(
-    auth_token: str,
-    site_id: str,
-    title: str,
-    content: str,
-    image_url: Optional[str] = None,
-    auth_type: str = "api_key",
-) -> str:
-    """Creates a draft on Wix and publishes it immediately."""
-    draft_id = create_draft_post(auth_token, site_id, title, content, image_url, auth_type=auth_type)
-    return publish_draft_post(auth_token, site_id, draft_id, auth_type=auth_type)
-
-def update_draft_post(
-    auth_token: str,
-    site_id: str,
-    draft_post_id: str,
-    title: Optional[str] = None,
-    content: Optional[str] = None,
-    auth_type: str = "api_key",
-) -> bool:
-    """Update title or content of an existing draft post on Wix."""
-    headers = _headers(auth_token, site_id, auth_type)
-    update_data: Dict[str, Any] = {}
-    if title:
-        update_data["title"] = title
-    if content:
-        update_data["richContent"] = {
-            "nodes": [
-                {
-                    "type": "PARAGRAPH",
-                    "id": "p1",
-                    "nodes": [{"type": "TEXT", "id": "", "nodes": [], "textData": {"text": content, "decorations": []}}],
-                    "paragraphData": {},
-                }
-            ]
-        }
-    
-    resp = requests.patch(
-        f"{WIX_API_BASE}/blog/v3/draft-posts/{draft_post_id}",
-        headers=headers,
-        json={"draftPost": update_data},
-        timeout=15,
+    resp = requests.post(
+        f"{WIX_API_BASE}/blog/v3/draft-posts", headers=_headers(access_token),
+        json={"draftPost": draft_post}, timeout=15,
     )
     if not resp.ok:
-        raise RuntimeError(f"Failed to update Wix draft: {resp.status_code} {resp.text}")
-    return True
+        if resp.status_code == 401 and "instanceId" in resp.text:
+            raise WixApiError(
+                "Wix could not find a Blog app for this site. Make sure Wix Blog is installed and the app has "
+                "Blog + Site Media permissions (reinstall the app if you added them recently).",
+                resp.status_code,
+            )
+        raise WixApiError(f"Wix rejected the draft post: {resp.status_code} {resp.text}", resp.status_code)
+    return resp.json()["draftPost"]["id"]
+
+
+def publish_draft_post(access_token: str, draft_post_id: str) -> str:
+    """Publish a draft. If it was already published, this updates the live post. Returns the post ID."""
+    resp = requests.post(
+        f"{WIX_API_BASE}/blog/v3/draft-posts/{draft_post_id}/publish",
+        headers=_headers(access_token), json={}, timeout=15,
+    )
+    _check(resp, "Wix rejected publishing the draft post")
+    return resp.json().get("postId") or draft_post_id
+
 
 def update_post(
-    auth_token: str,
-    site_id: str,
+    access_token: str,
     post_id: str,
     title: str,
-    content: str,
+    content: Optional[str] = None,
     is_draft: bool = False,
-    auth_type: str = "api_key",
 ) -> bool:
-    """Update a published post or draft while preserving its current status."""
-    post_data = {
-        "title": title,
-        "richContent": {
-            "nodes": [
-                {
-                    "type": "PARAGRAPH",
-                    "id": "p1",
-                    "nodes": [{"type": "TEXT", "id": "", "nodes": [], "textData": {"text": content, "decorations": []}}],
-                    "paragraphData": {},
-                }
-            ]
-        },
-    }
-    resource = "draft-posts" if is_draft else "posts"
-    resource_key = "draftPost" if is_draft else "post"
+    """
+    Edit a draft or a published post.
+
+    Wix has no "update published post" endpoint. Published posts are edited through
+    their draft: PATCH the draft with action UPDATE_PUBLICATION (the live post stays
+    up), then publish the draft, which overwrites the live post.
+
+    `content=None` leaves the body untouched (so images/embeds that the text editor
+    can't represent aren't destroyed by a title-only edit).
+    """
+    draft: Dict[str, Any] = {"id": post_id, "title": title}
+    if content is not None:
+        draft["richContent"] = {"nodes": text_to_ricos_nodes(content)}
+
     resp = requests.patch(
-        f"{WIX_API_BASE}/blog/v3/{resource}/{post_id}",
-        headers=_headers(auth_token, site_id, auth_type),
-        json={resource_key: post_data},
+        f"{WIX_API_BASE}/blog/v3/draft-posts/{post_id}",
+        headers=_headers(access_token),
+        json={"draftPost": draft, "action": "UPDATE" if is_draft else "UPDATE_PUBLICATION"},
         timeout=15,
     )
-    if not resp.ok:
-        raise RuntimeError(f"Failed to update Wix post: {resp.status_code} {resp.text}")
+    _check(resp, "Failed to update Wix post")
+
+    if not is_draft:
+        publish_draft_post(access_token, post_id)
     return True
 
-def delete_post(auth_token: str, site_id: str, post_id: str, is_draft: bool = False, auth_type: str = "api_key") -> bool:
-    """Delete a blog post or draft post from Wix."""
-    headers = _headers(auth_token, site_id, auth_type)
+
+def delete_post(access_token: str, post_id: str, is_draft: bool = False) -> bool:
     endpoint = f"draft-posts/{post_id}" if is_draft else f"posts/{post_id}"
-    url = f"{WIX_API_BASE}/blog/v3/{endpoint}"
-    
-    resp = requests.delete(url, headers=headers, timeout=12)
-    if not resp.ok:
-        raise RuntimeError(f"Failed to delete post from Wix: {resp.status_code} {resp.text}")
+    resp = requests.delete(f"{WIX_API_BASE}/blog/v3/{endpoint}", headers=_headers(access_token), timeout=12)
+    _check(resp, "Failed to delete post from Wix")
     return True
 
-def list_categories(auth_token: str, site_id: str, auth_type: str = "api_key") -> List[Dict[str, Any]]:
-    """Fetch blog categories from the Wix site."""
-    headers = _headers(auth_token, site_id, auth_type)
-    resp = requests.get(f"{WIX_API_BASE}/blog/v3/categories", headers=headers, timeout=10)
-    if resp.ok:
-        return resp.json().get("categories", [])
-    return []
 
-def list_tags(auth_token: str, site_id: str, auth_type: str = "api_key") -> List[Dict[str, Any]]:
-    """Fetch blog tags from the Wix site."""
-    headers = _headers(auth_token, site_id, auth_type)
-    resp = requests.get(f"{WIX_API_BASE}/blog/v3/tags", headers=headers, timeout=10)
-    if resp.ok:
-        return resp.json().get("tags", [])
-    return []
+def list_categories(access_token: str) -> List[Dict[str, Any]]:
+    resp = requests.get(f"{WIX_API_BASE}/blog/v3/categories", headers=_headers(access_token), timeout=10)
+    return resp.json().get("categories", []) if resp.ok else []

@@ -77,7 +77,7 @@
             </div>
           `;
         } else {
-          result.innerHTML = `<div class="text-error">Import error: ${data.error}</div>`;
+          result.innerHTML = `<div class="text-error">Import error: ${escapeHtml(data.error)}</div>`;
         }
       } catch (err) {
         result.innerHTML = `<div class="text-error">Network error: ${err.message}</div>`;
