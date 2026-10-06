@@ -86,7 +86,7 @@ This application uses **PostgreSQL exclusively**.
 ## How Clients Connect (Step-by-Step)
 
 ### Wix App OAuth 2.0 (1-Click App Install)
-1. Configure `WIX_APP_ID`, `WIX_APP_SECRET` and `WIX_REDIRECT_URI` (must match the callback registered in the Wix app).
+1. Configure `WIX_APP_ID`, `WIX_APP_SECRET` and `WIX_REDIRECT_URI`. The backend supplies `WIX_REDIRECT_URI` as the `redirectUrl` query parameter when it builds the Wix installer URL; it is not configured in the Wix app settings.
 2. The client clicks **Connect with Wix** on the *Connect Wix* page.
 3. The server stores a random, single-use `state` in the client's session and sends them to Wix's installer.
 4. The client reviews permissions and clicks **Add to Site**.
@@ -125,9 +125,9 @@ This repository includes `render.yaml` for a Render Blueprint deployment. From t
 2. Apply the Blueprint. It creates the Flask web service and PostgreSQL database and generates `SESSION_SECRET`.
 3. In the web service environment, set `ENCRYPTION_KEY` to a Fernet key generated with:
   `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
-4. After the web service has a public URL, set `WIX_REDIRECT_URI` in the web service environment to:
+4. After the web service has a public URL, set `WIX_REDIRECT_URI` in the web service environment to the public callback endpoint:
   `https://YOUR-RENDER-DOMAIN.onrender.com/api/wix/oauth/callback`
-5. If using Wix OAuth, also register that exact callback URL in the Wix app and set `WIX_APP_ID` and `WIX_APP_SECRET` in Render.
+5. Set `WIX_APP_ID` and `WIX_APP_SECRET` in Render. The app passes the callback URL to Wix's installer flow at connection time.
 
 Render supplies `DATABASE_URL` automatically from the managed PostgreSQL database.
 
