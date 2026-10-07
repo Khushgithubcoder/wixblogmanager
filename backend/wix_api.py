@@ -11,6 +11,7 @@ import requests
 from typing import Dict, Any, Optional, List, Tuple, Set
 
 WIX_API_BASE = "https://www.wixapis.com"
+PAGING_LIMIT_PARAM = "paging.limit"
 
 
 class WixApiError(RuntimeError):
@@ -88,9 +89,9 @@ def check_permissions(access_token: str) -> Dict[str, bool]:
     headers = _headers(access_token)
     checks = {
         "site_properties": ("/site-properties/v4/properties", (200,)),
-        "blog_management": ("/blog/v3/posts?paging.limit=1", (200,)),
-        "members_read": ("/members/v1/members?paging.limit=1", (200,)),
-        "site_media": ("/site-media/v1/files?paging.limit=1", (200, 404)),
+        "blog_management": (f"/blog/v3/posts?{PAGING_LIMIT_PARAM}=1", (200,)),
+        "members_read": (f"/members/v1/members?{PAGING_LIMIT_PARAM}=1", (200,)),
+        "site_media": (f"/site-media/v1/files?{PAGING_LIMIT_PARAM}=1", (200, 404)),
     }
     perms = {}
     for name, (path, ok_codes) in checks.items():
@@ -109,7 +110,7 @@ def list_members(access_token: str, limit: int = 100) -> List[Dict[str, Any]]:
     resp = requests.get(
         f"{WIX_API_BASE}/members/v1/members",
         headers=_headers(access_token),
-        params={"fieldsets": "PUBLIC", "paging.limit": limit},
+        params={"fieldsets": "PUBLIC", PAGING_LIMIT_PARAM: limit},
         timeout=12,
     )
     if not resp.ok:
@@ -200,72 +201,134 @@ def _paragraph(text: str) -> Dict[str, Any]:
     return {"type": "PARAGRAPH", "id": _nid(), "nodes": _inline_nodes(text), "paragraphData": {}}
 
 
+def _heading_node(stripped: str) -> Optional[Dict[str, Any]]:
+    heading = re.match(r"^(#{1,6})\s+(\S(?:.*\S)?)\s*$", stripped)
+    if not heading:
+        return None
+    return {
+        "type": "HEADING",
+        "id": _nid(),
+        "nodes": _inline_nodes(heading.group(2)),
+        "headingData": {"level": len(heading.group(1))},
+    }
+
+
+def _divider_node(stripped: str) -> Optional[Dict[str, Any]]:
+    if not re.fullmatch(r"(-{3,}|\*{3,}|_{3,})", stripped):
+        return None
+    return {"type": "DIVIDER", "id": _nid(), "nodes": [], "dividerData": {}}
+
+
+def _blockquote_node(lines: List[str], start: int) -> Tuple[Optional[Dict[str, Any]], int]:
+    if not lines[start].strip().startswith(">"):
+        return None, start
+
+    i = start
+    quoted: List[Dict[str, Any]] = []
+    while i < len(lines) and lines[i].strip().startswith(">"):
+        q = lines[i].strip()[1:].strip()
+        if q:
+            quoted.append(_paragraph(q))
+        i += 1
+    return {"type": "BLOCKQUOTE", "id": _nid(), "nodes": quoted or [_paragraph("")], "blockquoteData": {}}, i
+
+
+def _list_item_text(line: str) -> Tuple[Optional[str], bool]:
+    stripped = line.strip()
+    if not stripped:
+        return None, False
+
+    unordered = re.fullmatch(r"[*+-]\s+(\S.*)", stripped)
+    if unordered:
+        item = unordered.group(1).strip()
+        return (item or None), False
+
+    ordered = re.fullmatch(r"\d+[.)]\s+(\S.*)", stripped)
+    if ordered:
+        item = ordered.group(1).strip()
+        return (item or None), True
+
+    return None, False
+
+
+def _list_node(lines: List[str], start: int) -> Tuple[Optional[Dict[str, Any]], int]:
+    item_text, ordered = _list_item_text(lines[start])
+    if item_text is None:
+        return None, start
+
+    items = []
+    i = start
+    while i < len(lines):
+        current_text, current_ordered = _list_item_text(lines[i])
+        if current_text is None or current_ordered != ordered:
+            break
+        items.append({"type": "LIST_ITEM", "id": _nid(), "nodes": [_paragraph(current_text)], "listItemData": {}})
+        i += 1
+
+    node = {
+        "type": "ORDERED_LIST" if ordered else "BULLETED_LIST",
+        "id": _nid(),
+        "nodes": items,
+        "orderedListData" if ordered else "bulletedListData": {},
+    }
+    return node, i
+
+
+def _code_block_node(lines: List[str], start: int) -> Tuple[Optional[Dict[str, Any]], int]:
+    if not lines[start].strip().startswith("```"):
+        return None, start
+
+    i = start + 1
+    code: List[str] = []
+    while i < len(lines) and not lines[i].strip().startswith("```"):
+        code.append(lines[i])
+        i += 1
+    i += 1  # closing fence
+    node = {
+        "type": "CODE_BLOCK",
+        "id": _nid(),
+        "nodes": [_text_node("\n".join(code), [])],
+        "codeBlockData": {},
+    }
+    return node, i
+
+
 def text_to_ricos_nodes(content: str) -> List[Dict[str, Any]]:
     """Convert the editor's plain/Markdown-lite text into Ricos nodes."""
     lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     nodes: List[Dict[str, Any]] = []
     i = 0
     while i < len(lines):
-        line = lines[i].rstrip()
-        stripped = line.strip()
+        stripped = lines[i].strip()
         if not stripped:
             i += 1
             continue
 
-        if stripped.startswith("```"):  # fenced code block
-            i += 1
-            code: List[str] = []
-            while i < len(lines) and not lines[i].strip().startswith("```"):
-                code.append(lines[i])
-                i += 1
-            i += 1  # closing fence
-            nodes.append({
-                "type": "CODE_BLOCK", "id": _nid(),
-                "nodes": [_text_node("\n".join(code), [])], "codeBlockData": {},
-            })
+        if stripped.startswith("```"):
+            node, i = _code_block_node(lines, i)
+            nodes.append(node)
             continue
 
-        heading = re.match(r"^(#{1,6})\s+(.*\S)\s*$", stripped)
-        if heading:
-            nodes.append({
-                "type": "HEADING", "id": _nid(),
-                "nodes": _inline_nodes(heading.group(2)),
-                "headingData": {"level": len(heading.group(1))},
-            })
+        node = _heading_node(stripped)
+        if node is not None:
+            nodes.append(node)
             i += 1
             continue
 
-        if re.fullmatch(r"(-{3,}|\*{3,}|_{3,})", stripped):
-            nodes.append({"type": "DIVIDER", "id": _nid(), "nodes": [], "dividerData": {}})
+        node = _divider_node(stripped)
+        if node is not None:
+            nodes.append(node)
             i += 1
             continue
 
-        if stripped.startswith(">"):
-            quoted: List[Dict[str, Any]] = []
-            while i < len(lines) and lines[i].strip().startswith(">"):
-                q = lines[i].strip()[1:].strip()
-                if q:
-                    quoted.append(_paragraph(q))
-                i += 1
-            nodes.append({"type": "BLOCKQUOTE", "id": _nid(), "nodes": quoted or [_paragraph("")], "blockquoteData": {}})
+        node, i = _blockquote_node(lines, i)
+        if node is not None:
+            nodes.append(node)
             continue
 
-        bullet = re.match(r"^[-*+]\s+(.*\S)\s*$", stripped)
-        numbered = re.match(r"^\d+[.)]\s+(.*\S)\s*$", stripped)
-        if bullet or numbered:
-            ordered = bool(numbered)
-            pattern = r"^\d+[.)]\s+(.*\S)\s*$" if ordered else r"^[-*+]\s+(.*\S)\s*$"
-            items = []
-            while i < len(lines):
-                mm = re.match(pattern, lines[i].strip())
-                if not mm:
-                    break
-                items.append({"type": "LIST_ITEM", "id": _nid(), "nodes": [_paragraph(mm.group(1))], "listItemData": {}})
-                i += 1
-            nodes.append({
-                "type": "ORDERED_LIST" if ordered else "BULLETED_LIST", "id": _nid(), "nodes": items,
-                "orderedListData" if ordered else "bulletedListData": {},
-            })
+        node, i = _list_node(lines, i)
+        if node is not None:
+            nodes.append(node)
             continue
 
         nodes.append(_paragraph(stripped))
@@ -278,6 +341,70 @@ _SUPPORTED_NODES = {"PARAGRAPH", "TEXT", "HEADING", "BULLETED_LIST", "ORDERED_LI
 _SUPPORTED_DECOS = {"BOLD", "ITALIC", "LINK"}
 
 
+def _inline_rico_text(node: Dict[str, Any], unsupported: Set[str]) -> str:
+    if node.get("type") != "TEXT":
+        if node.get("type") not in _SUPPORTED_NODES:
+            unsupported.add(node.get("type", "UNKNOWN"))
+        return "".join(_inline_rico_text(child, unsupported) for child in node.get("nodes", []))
+    return _inline_rico_text_data(node, unsupported)
+
+
+def _inline_rico_text_data(node: Dict[str, Any], unsupported: Set[str]) -> str:
+    text = (node.get("textData") or {}).get("text", "")
+    for deco in (node.get("textData") or {}).get("decorations", []):
+        text = _inline_rico_decoration(text, deco, unsupported)
+    return text
+
+
+def _inline_rico_decoration(text: str, deco: Dict[str, Any], unsupported: Set[str]) -> str:
+    deco_type = deco.get("type")
+    if deco_type == "BOLD":
+        return f"**{text}**"
+    if deco_type == "ITALIC":
+        return f"*{text}*"
+    if deco_type == "LINK":
+        url = (((deco.get("linkData") or {}).get("link")) or {}).get("url")
+        return f"[{text}]({url})" if url else text
+    if deco_type not in _SUPPORTED_DECOS:
+        unsupported.add(f"text:{deco_type}")
+    return text
+
+
+def _list_rico_block(block_type: str, items: List[Dict[str, Any]], unsupported: Set[str]) -> List[str]:
+    out: List[str] = []
+    for index, item in enumerate(items, 1):
+        text = " ".join(
+            part
+            for child in item.get("nodes", [])
+            for part in _block_rico_text(child, unsupported)
+        )
+        prefix = f"{index}. " if block_type == "ORDERED_LIST" else "- "
+        out.append(f"{prefix}{text}")
+    return out
+
+
+def _block_rico_text(node: Dict[str, Any], unsupported: Set[str]) -> List[str]:
+    node_type = node.get("type")
+    kids = node.get("nodes", [])
+
+    if node_type == "PARAGRAPH":
+        return ["".join(_inline_rico_text(child, unsupported) for child in kids)]
+    if node_type == "HEADING":
+        level = (node.get("headingData") or {}).get("level", 2)
+        heading = "#" * max(1, min(6, level))
+        return [f"{heading} {''.join(_inline_rico_text(child, unsupported) for child in kids)}"]
+    if node_type in ("BULLETED_LIST", "ORDERED_LIST"):
+        return _list_rico_block(node_type, kids, unsupported)
+    if node_type == "BLOCKQUOTE":
+        return ["> " + text for child in kids for text in _block_rico_text(child, unsupported)]
+    if node_type == "CODE_BLOCK":
+        return ["```", "".join(_inline_rico_text(child, unsupported) for child in kids), "```"]
+    if node_type == "DIVIDER":
+        return ["---"]
+    unsupported.add(node_type or "UNKNOWN")
+    return []
+
+
 def ricos_to_text(rich_content: Optional[Dict[str, Any]]) -> Tuple[str, Set[str]]:
     """
     Turn Ricos back into the editor's Markdown-lite text.
@@ -286,52 +413,9 @@ def ricos_to_text(rich_content: Optional[Dict[str, Any]]) -> Tuple[str, Set[str]
     the UI warns when this set is non-empty.
     """
     unsupported: Set[str] = set()
-
-    def inline(node: Dict[str, Any]) -> str:
-        if node.get("type") != "TEXT":
-            if node.get("type") not in _SUPPORTED_NODES:
-                unsupported.add(node.get("type", "UNKNOWN"))
-            return "".join(inline(c) for c in node.get("nodes", []))
-        text = (node.get("textData") or {}).get("text", "")
-        for deco in (node.get("textData") or {}).get("decorations", []):
-            t = deco.get("type")
-            if t == "BOLD":
-                text = f"**{text}**"
-            elif t == "ITALIC":
-                text = f"*{text}*"
-            elif t == "LINK":
-                url = (((deco.get("linkData") or {}).get("link")) or {}).get("url")
-                text = f"[{text}]({url})" if url else text
-            elif t not in _SUPPORTED_DECOS:
-                unsupported.add(f"text:{t}")
-        return text
-
-    def block(node: Dict[str, Any]) -> List[str]:
-        t = node.get("type")
-        kids = node.get("nodes", [])
-        if t == "PARAGRAPH":
-            return ["".join(inline(c) for c in kids)]
-        if t == "HEADING":
-            level = (node.get("headingData") or {}).get("level", 2)
-            return ["#" * max(1, min(6, level)) + " " + "".join(inline(c) for c in kids)]
-        if t in ("BULLETED_LIST", "ORDERED_LIST"):
-            out = []
-            for n, item in enumerate(kids, 1):
-                text = " ".join(x for child in item.get("nodes", []) for x in block(child))
-                out.append(f"{n}. {text}" if t == "ORDERED_LIST" else f"- {text}")
-            return out
-        if t == "BLOCKQUOTE":
-            return ["> " + x for child in kids for x in block(child)]
-        if t == "CODE_BLOCK":
-            return ["```", "".join(inline(c) for c in kids), "```"]
-        if t == "DIVIDER":
-            return ["---"]
-        unsupported.add(t or "UNKNOWN")
-        return []
-
     lines: List[str] = []
-    for n in (rich_content or {}).get("nodes", []):
-        lines += block(n)
+    for node in (rich_content or {}).get("nodes", []):
+        lines.extend(_block_rico_text(node, unsupported))
     return "\n".join(lines), unsupported
 
 
@@ -345,7 +429,7 @@ def _check(resp: requests.Response, what: str) -> None:
 def list_posts(access_token: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
     resp = requests.get(
         f"{WIX_API_BASE}/blog/v3/posts", headers=_headers(access_token),
-        params={"paging.limit": limit, "paging.offset": offset}, timeout=12,
+        params={PAGING_LIMIT_PARAM: limit, "paging.offset": offset}, timeout=12,
     )
     _check(resp, "Failed to fetch posts from Wix")
 
@@ -373,7 +457,7 @@ def list_posts(access_token: str, limit: int = 50, offset: int = 0) -> List[Dict
 def list_draft_posts(access_token: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
     resp = requests.get(
         f"{WIX_API_BASE}/blog/v3/draft-posts", headers=_headers(access_token),
-        params={"paging.limit": limit, "paging.offset": offset}, timeout=12,
+        params={PAGING_LIMIT_PARAM: limit, "paging.offset": offset}, timeout=12,
     )
     if not resp.ok:
         return []

@@ -49,7 +49,10 @@
 
     async function loadBlogs() {
       const res = await fetch("/api/blogs");
-      if (!res.ok) return (window.location.href = "login.html");
+      if (!res.ok) {
+        window.location.href = "login.html";
+        return;
+      }
       const blogs = await res.json();
       const list = document.getElementById("list");
 
@@ -64,9 +67,14 @@
         if (b.status === 'scheduled') badgeClass = 'badge-warning';
         if (b.status === 'failed') badgeClass = 'badge-error';
 
+        const imageSrc = /^https?:\/\//.test(b.image_url) ? escapeHtml(b.image_url) : '';
+        const coverHtml = b.image_url
+          ? `<img src="${imageSrc}" class="post-cover" />`
+          : `<div class="post-cover" style="display:flex;align-items:center;justify-content:center;color:#999;font-size:12px;">No cover</div>`;
+
         return `
           <div class="post-row">
-            ${b.image_url ? `<img src="${/^https?:\/\//.test(b.image_url) ? escapeHtml(b.image_url) : ''}" class="post-cover" />` : `<div class="post-cover" style="display:flex;align-items:center;justify-content:center;color:#999;font-size:12px;">No cover</div>`}
+            ${coverHtml}
             <div class="post-main">
               <h3 class="post-title">${escapeHtml(b.title)}</h3>
               <div class="post-meta">
@@ -131,8 +139,8 @@
       return div.innerHTML;
     }
 
-    checkAuth();
-    loadBlogs();
+    await checkAuth();
+    await loadBlogs();
   </script>
   <script src="app.js"></script>
 </body>
